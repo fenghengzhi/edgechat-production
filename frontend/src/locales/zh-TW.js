@@ -209,7 +209,7 @@ export default {
   "settings.saveProfile": "保存資料",
   "settings.securitySection": "安全設置",
   "settings.push.title": "裝置推播通知",
-  "settings.push.hint": "即使關閉 EdgeChat，也能收到私訊和來電通知。",
+  "settings.push.hint": "關閉 EdgeChat 後也能收到通知。私訊會顯示對方暱稱和訊息預覽，來電會顯示來電者和通話類型。",
   "settings.push.on": "此裝置已啟用推播。",
   "settings.push.off": "此裝置的推播已關閉。",
   "settings.push.enable": "在此裝置啟用",

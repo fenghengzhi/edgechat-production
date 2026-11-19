@@ -3,8 +3,43 @@ import { decryptSecretValue, encryptSecretValue } from './encryption.js';
 import { ApiError } from './errors.js';
 import { activeUserSql } from './user-status.js';
 import { hashOpaqueToken } from './mobile-session.js';
+import { publicFileUrl } from './utils.js';
+import { normalizeContentType } from './attachment-metadata.js';
+import { createMessageMarkdownParser, markdownToPlainText } from '../../shared/message-markdown.ts';
 
 const maxDevices = 8;
+let previewMarkdown;
+
+function shortText(value, limit) {
+  const chars = Array.from(String(value || '').replace(/[\s\p{Cc}\p{Bidi_Control}]+/gu, ' ').trim());
+  return chars.length <= limit ? chars.join('') : chars.slice(0, limit - 1).join('') + '…';
+}
+
+function attachmentKind(attachment) {
+  if (!attachment) return '';
+  if (attachment.kind === 'voice') return 'voice';
+  const type = normalizeContentType(attachment.type).split('/')[0];
+  return ['image', 'video', 'audio'].includes(type) ? type : 'file';
+}
+
+function notificationPayload(event, sender) {
+  const senderName = shortText(sender.display_name, 64) || shortText(sender.username, 64);
+  const payload = { type: event.type, roomId: event.roomId, senderName };
+  // Avatars currently referenced by a user profile already allow an anonymous
+  // read. Bound the encoded path so one unusually long key never drops a push.
+  if (sender.avatar_key && sender.avatar_key.length <= 1024) {
+    const url = publicFileUrl(sender.avatar_key);
+    if (url.length <= 1024) payload.avatarUrl = url;
+  }
+  if (event.type === 'call') {
+    return { ...payload, callId: event.callId, media: event.media, expiresAt: event.expiresAt };
+  }
+  const kind = attachmentKind(event.attachment);
+  previewMarkdown ??= createMessageMarkdownParser();
+  const preview = shortText(markdownToPlainText(previewMarkdown, (event.content || '').slice(0, 4096)), 120)
+    || (kind === 'file' ? shortText(event.attachment.name, 120) : '');
+  return { ...payload, messageId: event.messageId, preview, ...(kind && { attachmentKind: kind }) };
+}
 
 function encode(bytes) {
   return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
@@ -150,8 +185,9 @@ export async function notifyDmDevices(env, senderId, event, send = fetch) {
   const vapid = pushConfig(env);
   if (!vapid) return;
   try {
-    const { results } = await env.DB.prepare(`SELECT p.* FROM channels c
+    const { results } = await env.DB.prepare(`SELECT p.*, author.display_name, author.username, author.avatar_key FROM channels c
       JOIN channel_members sender ON sender.channel_id = c.id AND sender.user_id = ?2
+      JOIN users author ON author.id = sender.user_id AND author.deleted_at IS NULL
       JOIN channel_members receiver ON receiver.channel_id = c.id AND receiver.user_id != sender.user_id
       JOIN users u ON u.id = receiver.user_id JOIN web_push_subscriptions p ON p.user_id = u.id
       WHERE c.id = ?1 AND c.kind = 'dm' AND c.deleted_at IS NULL
@@ -163,7 +199,9 @@ export async function notifyDmDevices(env, senderId, event, send = fetch) {
         AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE (b.blocker_id = sender.user_id AND b.blocked_id = u.id)
           OR (b.blocker_id = u.id AND b.blocked_id = sender.user_id)) LIMIT ?4`)
       .bind(event.roomId, senderId, Date.now(), maxDevices).all();
-    const deliveries = await Promise.allSettled(results.map(row => deliver(env, row, event, vapid, send)));
+    if (!results.length) return;
+    const payload = notificationPayload(event, results[0]);
+    const deliveries = await Promise.allSettled(results.map(row => deliver(env, row, payload, vapid, send)));
     if (deliveries.some(result => result.status === 'rejected')) console.warn('web_push_delivery_failed');
   } catch {
     // Endpoints and message data must never appear in logs or interrupt a committed message/call.

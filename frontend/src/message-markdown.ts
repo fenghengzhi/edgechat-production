@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import MarkdownIt from "markdown-it";
+import { createMessageMarkdownParser, markdownToPlainText } from "../../shared/message-markdown.ts";
 import type { MessageMention } from "./mentions.ts";
 import { tokenizeMessageText } from "./message-text.ts";
 
@@ -38,23 +38,7 @@ const ALLOWED_TAGS = [
 ];
 const ALLOWED_ATTRIBUTES = ["class", "href", "rel", "target"];
 
-function isSafeWebUrl(value: string) {
-	try {
-		const url = new URL(value);
-		return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
-	} catch {
-		return false;
-	}
-}
-
-const markdown = new MarkdownIt({
-	breaks: true,
-	html: false,
-	linkify: false,
-	typographer: false,
-});
-
-markdown.validateLink = isSafeWebUrl;
+const markdown = createMessageMarkdownParser();
 
 markdown.core.ruler.after("inline", "edgechat-message-text", (state) => {
 	const environment = state.env as MarkdownEnvironment;
@@ -106,7 +90,7 @@ markdown.renderer.rules.image = (tokens, index) => {
 	const source = token.attrGet("src") || "";
 	const label = token.content || source;
 	const escapedLabel = markdown.utils.escapeHtml(label);
-	if (!isSafeWebUrl(source)) {
+	if (!markdown.validateLink(source)) {
 		return `<span class="message-image-syntax">${markdown.utils.escapeHtml(`![${label}](${source})`)}</span>`;
 	}
 	return `<a class="message-link message-image-link" href="${markdown.utils.escapeHtml(source)}" target="_blank" rel="noopener noreferrer">${escapedLabel}</a>`;
@@ -148,20 +132,5 @@ export function renderMessageMarkdown(
 }
 
 export function messageMarkdownToPlainText(content: string) {
-	const parts: string[] = [];
-	for (const token of markdown.parse(String(content || ""), {})) {
-		if (token.type === "fence" || token.type === "code_block") {
-			parts.push(token.content);
-			continue;
-		}
-		for (const child of token.children || []) {
-			if (child.type === "text" || child.type === "code_inline" || child.type === "image") {
-				parts.push(child.content);
-			} else if (child.type === "softbreak" || child.type === "hardbreak") {
-				parts.push("\n");
-			}
-		}
-		if (token.type === "inline") parts.push("\n");
-	}
-	return parts.join("").replace(/\s+/gu, " ").trim();
+	return markdownToPlainText(markdown, content);
 }

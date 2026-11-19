@@ -105,7 +105,7 @@ export default {
   'settings.saveProfile': '保存资料',
   'settings.securitySection': '安全设置',
   "settings.push.title": "设备推送通知",
-  "settings.push.hint": "即使关闭 EdgeChat，也能收到私聊消息和来电通知。",
+  "settings.push.hint": "关闭 EdgeChat 后也能收到通知。私信显示对方昵称和消息预览，来电显示呼叫者和通话类型。",
   "settings.push.on": "此设备已启用推送。",
   "settings.push.off": "此设备的推送已关闭。",
   "settings.push.enable": "在此设备启用",

@@ -162,6 +162,7 @@ export class ChannelRoom {
         wakeForMessage(this.env, room, message),
         room.kind === 'dm' && message.sender.kind === 'local' && notifyDmDevices(this.env, message.sender.id, {
           type: 'message', roomId: Number(room.id), messageId: Number(message.id),
+          content: message.content, attachment: message.attachment,
         })
       ])
     );

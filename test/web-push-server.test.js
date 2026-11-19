@@ -11,7 +11,7 @@ const SQL = await initSqlJs();
 const schema = readFileSync(new URL('../worker/schema.sql', import.meta.url), 'utf8');
 const origin = 'https://chat.example';
 const vapid = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' });
-const message = { type: 'message', roomId: 10, messageId: 25 };
+const message = { type: 'message', roomId: 10, messageId: 25, content: '## **发布**\n\n[说明](https://example.com/private-link)' };
 
 function browser(name) {
   const ecdh = createECDH('prime256v1');
@@ -112,6 +112,8 @@ test('only an active DM peer gets a decryptable standards-compliant payload; mut
   const f = fixture(t);
   const [one, two, outside] = f.sessions;
   const receiver = browser('receiver'), muted = browser('muted');
+  f.database.run("INSERT INTO uploaded_files(object_key,owner_user_id,content_type) VALUES('1/avatar 图片.png',1,'image/png')");
+  f.database.run("UPDATE users SET display_name='小林', avatar_key='1/avatar 图片.png' WHERE id=1");
   for (const [user, device] of [[one, browser('sender')], [outside, browser('outside')], [two, receiver]]) {
     assert.equal((await f.subscribe(user, device)).status, 200);
   }
@@ -129,14 +131,17 @@ test('only an active DM peer gets a decryptable standards-compliant payload; mut
   const [header, payload, signature] = token.split('.');
   assert.ok(verify('sha256', Buffer.from(header + '.' + payload), { key: createPublicKey({ key: vapid, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, Buffer.from(signature, 'base64url')));
   assert.equal(JSON.parse(Buffer.from(payload, 'base64url')).aud, 'https://fcm.googleapis.com');
-  assert.deepEqual(decrypt(receiver, init.body), { ...message, recipientId: two.userId });
+  const identity = { senderName: '小林', avatarUrl: '/files/1%2Favatar%20%E5%9B%BE%E7%89%87.png' };
+  assert.deepEqual(decrypt(receiver, init.body), {
+    type: 'message', roomId: 10, messageId: 25, ...identity, preview: '发布 说明', recipientId: two.userId,
+  });
   const call = { type: 'call', roomId: 10, callId: 'invite', media: 'video', expiresAt: Date.now() + 30_000 };
   await notifyDmDevices(f.env, one.userId, call, send);
   assert.equal(packets.length, 2);
   assert.ok(packets[1].init.headers.ttl <= 30);
   assert.equal(packets[1].init.headers.urgency, 'high');
   assert.equal(packets[1].endpoint, receiver.subscription.endpoint);
-  assert.deepEqual(decrypt(receiver, packets[1].init.body), { ...call, recipientId: two.userId });
+  assert.deepEqual(decrypt(receiver, packets[1].init.body), { ...call, ...identity, recipientId: two.userId });
   await notifyDmDevices(f.env, one.userId, { ...call, expiresAt: Date.now() - 1 }, send);
   await notifyDmDevices(f.env, one.userId, { ...message, roomId: 1 }, send);
   await notifyDmDevices(f.env, outside.userId, message, send);
@@ -149,6 +154,40 @@ test('only an active DM peer gets a decryptable standards-compliant payload; mut
   await notifyDmDevices(f.env, one.userId, message, async () => new Response(null, { status: 410 }));
   assert.equal(await f.status(two, receiver), false);
   assert.equal(await f.status(two, muted), true);
+});
+
+test('encrypted previews bound text, use the account name as fallback, and describe attachments without sharing file URLs', async t => {
+  const f = fixture(t);
+  const [, recipient] = f.sessions;
+  const device = browser('preview');
+  await f.subscribe(recipient, device);
+  f.database.run("INSERT INTO uploaded_files(object_key,owner_user_id,content_type) VALUES(?,1,'image/png')", ['界'.repeat(600)]);
+  f.database.run("UPDATE users SET display_name=' ', avatar_key=? WHERE id=1", ['界'.repeat(600)]);
+  const receive = async event => {
+    let payload;
+    await notifyDmDevices(f.env, 1, event, (_endpoint, init) => {
+      payload = decrypt(device, init.body);
+      return new Response(null, { status: 201 });
+    });
+    return payload;
+  };
+  for (const [attachment, kind, content, expected] of [
+    [{ type: 'image/png' }, 'image', '**配图** 说明', '配图 说明'],
+    [{ type: 'video/mp4' }, 'video', '', ''],
+    [{ kind: 'voice', type: 'audio/webm' }, 'voice', '', ''],
+    [{ type: 'audio/mpeg' }, 'audio', '', ''],
+    [{ type: 'application/pdf', name: '报告.pdf' }, 'file', '', '报告.pdf'],
+  ]) {
+    const file = { ...attachment, key: 'private-object', url: '/files/private-object' };
+    const payload = await receive({ ...message, content, attachment: file });
+    assert.deepEqual(payload, {
+      type: 'message', roomId: 10, recipientId: 2, messageId: 25, senderName: 'one', attachmentKind: kind, preview: expected,
+    });
+  }
+  const long = await receive({ ...message, content: '🥁'.repeat(3000) });
+  assert.equal(long.preview, '🥁'.repeat(119) + '…');
+  const voice = { type: 'call', roomId: 10, media: 'audio', callId: 'c', expiresAt: Date.now() + 45_000 };
+  assert.deepEqual(await receive(voice), { ...voice, senderName: 'one', recipientId: 2 });
 });
 
 test('one failed provider does not interrupt its sibling and a stale 410 cannot erase a renewed subscription', async t => {

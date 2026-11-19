@@ -136,7 +136,7 @@ export default {
   'settings.saveProfile': 'Save profile',
   'settings.securitySection': 'Security',
   "settings.push.title": "Device push notifications",
-  "settings.push.hint": "Get notifications for direct messages and incoming calls, even when EdgeChat is closed.",
+  "settings.push.hint": "Get notifications even when EdgeChat is closed. Direct messages show the sender and a preview. Calls show who is calling and whether it’s a voice or video call.",
   "settings.push.on": "Enabled on this device.",
   "settings.push.off": "Disabled on this device.",
   "settings.push.enable": "Enable on this device",

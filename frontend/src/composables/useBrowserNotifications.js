@@ -177,27 +177,25 @@ export function useBrowserNotifications(options = {}) {
 		}
 
 		const callInvite = event?.type === 'call_invite';
-		const title = callInvite ? `${room.name || 'EdgeChat'} · ${t(event.media === 'video' ? 'call.videoIncoming' : 'call.incoming')}` : event?.replyToMe
-			? t("notifications.repliedTitle", { room: room.name || "EdgeChat" })
-			: event?.mentionsMe
-				? t("notifications.mentionedTitle", { room: room.name || "EdgeChat" })
-				: room.name || "EdgeChat";
-		const senderName =
-			event?.sender?.displayName || event?.sender?.username || "";
-			const attentionBody = [
-				senderName,
-				messageMarkdownToPlainText(event?.contentPreview || ""),
-			]
-			.filter(Boolean)
-			.join(": ");
-		const body = callInvite ? t(event.media === 'video' ? 'call.video' : 'call.voice') : needsAttention
-			? attentionBody ||
-				(event?.replyToMe
-					? t("notifications.repliedBody")
-					: t("notifications.mentionedBody"))
-			: room.kind === "dm"
-				? t("notifications.directMessage")
-				: t("notifications.groupMessage");
+		const webDm = !nativeNotifications && room.kind === "dm";
+		const senderName = event?.sender?.displayName || event?.sender?.username || "";
+		const roomName = room.name || "EdgeChat";
+		let title = roomName;
+		let body = t(room.kind === "dm" ? "notifications.directMessage" : "notifications.groupMessage");
+		if (webDm) {
+			title = senderName || roomName;
+			body = callInvite
+				? t(event.media === "video" ? "call.videoIncoming" : "call.incoming")
+				: messageMarkdownToPlainText(event.contentPreview || "") || body;
+		} else if (callInvite) {
+			title = `${roomName} · ${t(event.media === "video" ? "call.videoIncoming" : "call.incoming")}`;
+			body = t(event.media === "video" ? "call.video" : "call.voice");
+		} else if (needsAttention) {
+			title = t(event.replyToMe ? "notifications.repliedTitle" : "notifications.mentionedTitle", { room: roomName });
+			const preview = messageMarkdownToPlainText(event.contentPreview || "");
+			body = [senderName, preview].filter(Boolean).join(": ") ||
+				t(event.replyToMe ? "notifications.repliedBody" : "notifications.mentionedBody");
+		}
 
 		if (nativeNotifications) {
 			void nativeNotifications.showNotification({
@@ -211,6 +209,10 @@ export function useBrowserNotifications(options = {}) {
 		}
 
 		const tag = `edgechat:${browserNotificationRoomKey(room)}`;
+		const notificationOptions = { body, tag, renotify: true };
+		if (webDm && event.sender?.kind === "local" && event.sender.avatarUrl?.startsWith("/files/")) {
+			notificationOptions.icon = event.sender.avatarUrl;
+		}
 
 		// PWA / standalone 模式下，Service Worker 的 showNotification 比
 		// Notification 构造函数更可靠（构造函数在部分 Chrome 独立窗口中
@@ -224,13 +226,11 @@ export function useBrowserNotifications(options = {}) {
 						!registration?.active ||
 						new URL(registration.active.scriptURL).pathname !== "/sw.js"
 					) {
-						showFallbackNotification(title, body, tag, room);
+						showFallbackNotification(title, notificationOptions, room);
 						return;
 					}
 					return registration.showNotification(title, {
-						body,
-						tag,
-						renotify: true,
+						...notificationOptions,
 						data: {
 							roomKind: room.kind,
 							roomId: Number(room.id),
@@ -238,24 +238,20 @@ export function useBrowserNotifications(options = {}) {
 					});
 				})
 				.catch(() => {
-					showFallbackNotification(title, body, tag, room);
+					showFallbackNotification(title, notificationOptions, room);
 				});
 			return true;
 		}
 
-		showFallbackNotification(title, body, tag, room);
+		showFallbackNotification(title, notificationOptions, room);
 		return true;
 	}
 
-	function showFallbackNotification(title, body, tag, room) {
+	function showFallbackNotification(title, notificationOptions, room) {
 		if (typeof notificationApi !== "function") {
 			return;
 		}
-		const notification = new notificationApi(title, {
-			body,
-			tag,
-			renotify: true,
-		});
+		const notification = new notificationApi(title, notificationOptions);
 		notification.onclick = () => {
 			browserWindow?.focus();
 			options.onOpenRoom?.(room);
