@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -53,6 +54,7 @@ export async function syncUpstream({
 	hasSyncToken = false,
 	git = runGit,
 	request = githubRequest,
+	wait = delay,
 }) {
 	if (repository.toLowerCase() === UPSTREAM.toLowerCase()) {
 		console.log("上游主仓无需同步自身。");
@@ -61,6 +63,7 @@ export async function syncUpstream({
 	const upstream = await request(`/repos/${UPSTREAM}`);
 	await git(["fetch", "--no-tags", "origin", `refs/heads/${branch}`]);
 	await git(["checkout", "--detach", "FETCH_HEAD"]);
+	const original = await git(["rev-parse", "HEAD"]);
 	await git([
 		"fetch",
 		"--no-tags",
@@ -80,30 +83,48 @@ export async function syncUpstream({
 		return { updated: false, dispatched: false };
 	}
 
-	let updated = false;
+	let base;
 	try {
-		await git(["merge-base", "--is-ancestor", target.commit, "HEAD"]);
+		base = await git(["merge-base", "--all", original, target.commit]);
 	} catch (error) {
 		if (error.code !== 1) throw error;
+		throw new Error("当前分支与上游发布没有共同历史，已停止同步。");
+	}
+	if (base.includes("\n")) throw new Error("存在多个合并基点，请手动确认重放范围。");
+	const hasForkMerges = Boolean(await git(["rev-list", "--merges", "-1", `${base}..${original}`]));
+	// An older sync may have brought this release in as the second parent.
+	let needsRebase = base !== target.commit;
+	if (!needsRebase && hasForkMerges) {
+		const firstParents = await git(["rev-list", "--first-parent", original]);
+		needsRebase = !firstParents.split("\n").includes(target.commit);
+	}
+	let updated = false;
+	if (needsRebase) {
 		await git(["config", "user.name", "github-actions[bot]"]);
 		await git([
 			"config",
 			"user.email",
 			"41898282+github-actions[bot]@users.noreply.github.com",
 		]);
-		// 保留 fork 自己的提交；冲突或分支保护拒绝时直接失败，绝不强推。
+		// Flatten old sync merges only if their conflict resolutions survive.
+		const expectedTree = hasForkMerges ? await git(["merge-tree", "--write-tree", original, target.commit]) : null;
 		await git([
-			"merge",
-			"--no-ff",
-			"--no-edit",
+			"rebase",
+			"--no-rebase-merges",
+			"--no-update-refs",
+			"--reapply-cherry-picks",
+			"--empty=keep",
+			"--onto",
 			target.commit,
-			"-m",
-			`chore: sync upstream ${target.kind} update [skip ci]`,
+			base,
 		]);
+		if (expectedTree && expectedTree !== (await git(["rev-parse", "HEAD^{tree}"]))) {
+			throw new Error("变基结果未保留原合并中的修改，已停止推送，请手动处理。");
+		}
 		const workflowsChanged = await git([
 			"diff",
 			"--name-only",
-			"HEAD^1",
+			original,
 			"HEAD",
 			"--",
 			".github/workflows",
@@ -113,21 +134,24 @@ export async function syncUpstream({
 				"更新包含 Actions 文件，请配置具有 Contents/Workflows 写权限的 EDGECHAT_SYNC_TOKEN 后重试。",
 			);
 		}
-		await git(["push", "origin", `HEAD:refs/heads/${branch}`]);
+		const ref = `refs/heads/${branch}`;
+		await git(["push", `--force-with-lease=${ref}:${original}`, "origin", `HEAD:${ref}`]);
 		updated = true;
 	}
 
 	const commit = await git(["rev-parse", "HEAD"]);
 	const workflowPath = `/repos/${repository}/actions/workflows/${DEPLOY_WORKFLOW}`;
-	const runs = await request(
-		`${workflowPath}/runs?head_sha=${commit}&per_page=100`,
-	);
-	const deployedOrRunning = runs.workflow_runs.some(
-		(run) => run.conclusion === "success" || run.status !== "completed",
-	);
-	if (deployedOrRunning) {
-		console.log(`${target.kind}: ${commit} 已部署或正在部署，无需重复派发。`);
-		return { updated, dispatched: false, commit };
+	const runsPath = `${workflowPath}/runs?branch=${encodeURIComponent(branch)}&head_sha=${commit}&per_page=100`;
+	// A PAT push can trigger deployment before the run appears in the API.
+	const retries = updated && hasSyncToken ? 4 : 0;
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		if (attempt) await wait(5000);
+		const { workflow_runs: runs } = await request(runsPath);
+		if (runs.some(run => run.conclusion === "success" || run.status !== "completed")) {
+			console.log(`${target.kind}: ${commit} 已部署或正在部署，无需重复派发。`);
+			return { updated, dispatched: false, commit };
+		}
+		if (runs.length) break;
 	}
 	// GITHUB_TOKEN 的 push 不会触发 Actions；dispatch 是官方允许的例外。
 	// 即使上次推送后派发/部署失败，下次检查也会对当前 SHA 重新派发。

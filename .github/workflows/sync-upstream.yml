@@ -26,7 +26,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: "24"
-      - name: Merge marked upstream update and dispatch deployment
+      - name: Rebase fork commits onto the marked release and check deployment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EDGECHAT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}

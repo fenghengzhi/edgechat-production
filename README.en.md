@@ -195,7 +195,7 @@ Forgot the administrator password? Update the repository's `EDGECHAT_ADMIN_PASSW
 
 Messages are retained for **30 days** by default, then automatically deleted in batches by daily cleanup. Set `MESSAGE_RETENTION_DAYS` to customize this period. Existing explicit settings remain effective after upgrades; deleted messages cannot be restored.
 
-Using the GitHub Actions workflow included in the repository is recommended for deployment and subsequent updates. `Sync Upstream` checks twice daily, merges upstream releases marked with the `EdgeChat-Update: stable` / `security` commit trailer, and explicitly dispatches deployment. See the [update guide](https://echat.azora.top/en/guide/updating-fork) for setup and token permissions, and the [deployment guide](https://echat.azora.top/en/guide/actions-deploy) for `MESSAGE_RETENTION_DAYS`.
+Twice daily, `Sync Upstream` rebases your custom commits onto the latest upstream release marked `EdgeChat-Update: stable` or `security`. It publishes the result with an explicit Git lease and checks whether deployment has started. See the [update guide](docs/auto-update.md) for setup and token permissions and the [deployment guide](https://echat.azora.top/en/guide/actions-deploy) for `MESSAGE_RETENTION_DAYS`.
 
 After forking, open **Actions** in your own repository, enable workflows when GitHub prompts you, then select **`00 Deploy Worker`** near the top of the list and click **`Run workflow`**. The `00` prefix is inherited by forks for default name sorting; it does not depend on upstream pin settings. No other workflow is needed to deploy the site.
 

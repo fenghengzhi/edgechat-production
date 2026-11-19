@@ -52,14 +52,19 @@ function fixture(t, { customized = false, conflict = false } = {}) {
 	}
 	const requests = [];
 	let runs = [];
+	let runsAfterWait;
 	let failDispatch = false;
 	let rejectPush = false;
 	return {
 		base,
 		commit,
 		requests,
+		upstream,
 		setRuns(value) {
 			runs = value;
+		},
+		setRunsAfterWait(value) {
+			runsAfterWait = value;
 		},
 		failDispatch(value) {
 			failDispatch = value;
@@ -70,14 +75,18 @@ function fixture(t, { customized = false, conflict = false } = {}) {
 		originHead: () => command(origin, ["rev-parse", "main"]),
 		read: (name) => readFileSync(join(checkout, name), "utf8"),
 		git: (args) => command(checkout, args),
-		async sync(hasSyncToken = false) {
+		async sync(hasSyncToken = false, beforePush) {
 			return syncUpstream({
 				repository: "example/Edgechat",
 				branch: "main",
 				hasSyncToken,
+				wait: async () => {
+					if (runsAfterWait) runs = runsAfterWait;
+				},
 				git: async (args) => {
 					if (rejectPush && args[0] === "push")
 						throw new Error("Branch protection rejected push");
+					if (args[0] === "push") beforePush?.(args);
 					const localArgs = args.map((arg) =>
 						arg === "https://github.com/aozorae/Edgechat.git" ? upstream : arg,
 					);
@@ -125,7 +134,7 @@ test("没有发布 trailer 的提交不会自动同步", async (t) => {
 	assert.equal(f.requests.length, 1);
 });
 
-test("stable 一次合并之前的所有提交与版本，但不包含之后的开发提交", async (t) => {
+test("没有定制时直接快进到 stable，保留发布之前的变更", async (t) => {
 	const f = fixture(t);
 	f.commit("Earlier feature", "feature.txt");
 	const release = f.commit(
@@ -140,8 +149,7 @@ test("stable 一次合并之前的所有提交与版本，但不包含之后的�
 		dispatched: true,
 		commit: f.originHead(),
 	});
-	f.git(["merge-base", "--is-ancestor", release, "HEAD"]);
-	assert.match(f.git(["log", "-1", "--format=%B"]), /\[skip ci\]/);
+	assert.equal(result.commit, release);
 	assert.equal(f.read("feature.txt"), "Earlier feature");
 	assert.equal(JSON.parse(f.read("package.json")).version, "1.1.0");
 	assert.throws(() => f.read("development.txt"), { code: "ENOENT" });
@@ -150,19 +158,37 @@ test("stable 一次合并之前的所有提交与版本，但不包含之后的�
 	);
 });
 
-test("security 优先跟进最新标记并保留 fork 自定义提交", async (t) => {
+test("连续发布后定制提交都位于最新标记上方，重复检查保留当前 SHA", async (t) => {
 	const f = fixture(t, { customized: true });
-	f.commit("Stable\n\nEdgeChat-Update: stable", "stable.txt");
+	f.git(["mv", "custom.txt", "theme.txt"]);
+	f.git(["commit", "-m", "Rename customization"]);
+	f.git(["push", "origin", "main"]);
+	const stable = f.commit("Stable\n\nEdgeChat-Update: stable", "stable.txt");
+	f.commit("Feature in development", "later-feature.txt");
+	const first = await f.sync();
+	assert.equal(first.updated, true);
+	assert.equal(first.dispatched, true);
+	assert.equal(f.git(["rev-parse", "HEAD~2"]), stable);
+	assert.throws(() => f.read("later-feature.txt"), { code: "ENOENT" });
+
 	const security = f.commit("Fix\n\nEdgeChat-Update: security", "security.txt");
+	f.commit("Work after release", "draft.txt");
 	const result = await f.sync();
 	assert.equal(result.updated, true);
 	assert.equal(result.dispatched, true);
-	assert.equal(f.read("custom.txt"), "Fork customization\n");
-	f.git(["merge-base", "--is-ancestor", security, "HEAD"]);
+	assert.equal(f.git(["rev-parse", "HEAD~2"]), security);
+	assert.equal(f.git(["log", "--format=%s (%an)", `${security}..HEAD`]),
+		"Rename customization (Fork owner)\nCustomize fork (Fork owner)");
+	assert.notEqual(result.commit, first.commit);
+	assert.equal(f.read("theme.txt"), "Fork customization\n");
+	assert.equal(f.read("later-feature.txt"), "Feature in development");
+	assert.throws(() => f.read("draft.txt"), { code: "ENOENT" });
 	assert.equal(f.originHead(), result.commit);
+	f.setRuns([{ status: "completed", conclusion: "success" }]);
+	assert.deepEqual(await f.sync(), { updated: false, dispatched: false, commit: result.commit });
 });
 
-test("合并冲突不推送、不派发、不覆盖自定义版本", async (t) => {
+test("变基冲突时保留远端版本并跳过部署", async (t) => {
 	const f = fixture(t, { conflict: true });
 	const before = f.originHead();
 	f.commit(
@@ -170,6 +196,61 @@ test("合并冲突不推送、不派发、不覆盖自定义版本", async (t) =
 		"package.json",
 		'{"version":"1.0.1"}\n',
 	);
+	await assert.rejects(f.sync());
+	assert.equal(f.originHead(), before);
+	assert.equal(f.requests.length, 1);
+});
+
+test("将第二父系引入的旧同步合并改为线性历史并保留整个文件树", async (t) => {
+	const f = fixture(t, { customized: true });
+	const release = f.commit("Release\n\nEdgeChat-Update: stable", "release.txt");
+	f.git(["fetch", f.upstream, "main"]);
+	f.git(["merge", "--no-ff", "-m", "chore: sync upstream stable update [skip ci]", release]);
+	f.git(["mv", "custom.txt", "theme.txt"]);
+	f.git(["commit", "-m", "Rename customization"]);
+	f.git(["push", "origin", "main"]);
+	const previousTree = f.git(["rev-parse", "HEAD^{tree}"]);
+
+	assert.equal((await f.sync()).updated, true);
+	assert.equal(f.git(["rev-parse", "HEAD~2"]), release);
+	assert.equal(f.git(["rev-parse", "HEAD^{tree}"]), previousTree);
+	assert.equal(f.originHead(), f.git(["rev-parse", "HEAD"]));
+});
+
+test("旧合并里单独保存的手工调整会在重放中消失时拒绝改写远端", async (t) => {
+	const f = fixture(t, { customized: true });
+	const release = f.commit("Release\n\nEdgeChat-Update: stable", "release.txt");
+	f.git(["fetch", f.upstream, "main"]);
+	f.git(["merge", "--no-ff", "--no-commit", release]);
+	f.git(["mv", "release.txt", "production-release.txt"]);
+	f.git(["commit", "-m", "chore: sync upstream stable update [skip ci]"]);
+	f.git(["push", "origin", "main"]);
+	const before = f.originHead();
+	await assert.rejects(f.sync());
+	assert.equal(f.originHead(), before);
+	assert.equal(f.requests.length, 1);
+});
+
+test("远端与 tracking ref 在变基后同时前移，精确 lease 仍拒绝推送", async (t) => {
+	const f = fixture(t, { customized: true });
+	f.git(["commit", "--allow-empty", "-m", "Concurrent fork change"]);
+	const concurrent = f.git(["rev-parse", "HEAD"]);
+	f.commit("Release\n\nEdgeChat-Update: stable", "release.txt");
+	await assert.rejects(f.sync(true, () => {
+		f.git(["push", "origin", `${concurrent}:refs/heads/main`]);
+		assert.equal(f.git(["rev-parse", "refs/remotes/origin/main"]), concurrent);
+	}));
+	assert.equal(f.originHead(), concurrent);
+	assert.equal(f.requests.length, 1);
+});
+
+test("没有共同历史时保留原远端分支", async (t) => {
+	const f = fixture(t, { customized: true });
+	f.git(["switch", "--orphan", "replacement"]);
+	f.git(["commit", "--allow-empty", "-m", "Independent history"]);
+	f.git(["push", "--force-with-lease", "origin", "HEAD:refs/heads/main"]);
+	const before = f.originHead();
+	f.commit("Release\n\nEdgeChat-Update: stable", "release.txt");
 	await assert.rejects(f.sync());
 	assert.equal(f.originHead(), before);
 	assert.equal(f.requests.length, 1);
@@ -231,6 +312,17 @@ test("当前 SHA 已部署或部署中时不重复派发", async (t) => {
 		});
 		assert.equal(f.requests.length, 2);
 	}
+});
+
+test("PAT 推送后稍迟登记的部署运行会阻止重复派发", async (t) => {
+	const f = fixture(t, { customized: true });
+	f.commit("Stable\n\nEdgeChat-Update: stable", "release.txt");
+	f.setRunsAfterWait([{ status: "queued", conclusion: null }]);
+	const result = await f.sync(true);
+	assert.equal(result.updated, true);
+	assert.equal(result.dispatched, false);
+	assert.ok(f.requests.filter(({ path }) => path.includes(`head_sha=${result.commit}`)).length >= 2);
+	assert.ok(f.requests.every(({ body }) => !body));
 });
 
 test("标记选择仅接受两个约定值并选择最新提交", () => {

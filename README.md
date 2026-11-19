@@ -92,7 +92,7 @@
   <tr>
     <td width="50%" valign="top">
       <b>☁️ 零服务器运维</b><br />
-      全部运行在你自己的 Cloudflare 账号里。GitHub Actions 自动部署，并可每日检查上游稳定版与安全更新、自动合并发布。
+      全部运行在你自己的 Cloudflare 账号里。GitHub Actions 每日检查上游稳定版和安全更新，将你的定制提交重放在新版本之上并自动部署。
     </td>
     <td width="50%" valign="top">
       <b>🛡️ 邀请制与精细管控</b><br />
@@ -201,7 +201,7 @@ GitHub Actions 会管理服务端加密 Worker Secrets。首次部署时，如�
 
 消息默认保留 **30 天**，超过保留期后由每日定时任务分批自动删除；`MESSAGE_RETENTION_DAYS` 可自定义，已有显式配置不会因升级改变，已删除消息无法恢复。
 
-推荐使用仓库内置的 GitHub Actions 工作流进行部署和后续更新。`Sync Upstream` 每天检查两次，仅自动合并带 `EdgeChat-Update: stable` / `security` 尾行标记的上游发布并显式触发部署；首次启用、同步令牌及 `MESSAGE_RETENTION_DAYS` 配置见[自动更新说明](docs/auto-update.md)。
+GitHub Actions 的 `Sync Upstream` 每天检查两次，将定制提交变基到最新带 `EdgeChat-Update: stable` 或 `security` 标记的上游发布，并检查部署是否已启动。配置与本地分支同步步骤见[自动更新说明](docs/auto-update.md)。
 
 Fork 后首次进入自己的仓库 `Actions` 页面，先按 GitHub 提示启用工作流，再选择列表靠前的 **`00 Deploy Worker`** 并点击 **`Run workflow`**。`00` 前缀随 Fork 继承，用于默认名称排序，不依赖主仓的置顶设置；部署网站无需运行其他工作流。
 

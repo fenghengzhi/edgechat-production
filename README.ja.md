@@ -186,7 +186,7 @@ GitHub Actions はサーバーサイド暗号化の Worker Secrets を管理し�
 
 メッセージの既定保持期間は **30 日間**です。期限を過ぎると毎日の定期処理で順次自動削除されます。`MESSAGE_RETENTION_DAYS` で変更でき、明示的な既存設定はアップグレード後も維持されます。削除済みメッセージは復元できません。
 
-デプロイとその後の更新には、リポジトリに組み込まれた GitHub Actions ワークフローの利用を推奨します。`Sync Upstream` は毎日 2 回確認し、コミット末尾の `EdgeChat-Update: stable` / `security` が付いた上流リリースをマージして明示的にデプロイを起動します。初回設定とトークン権限は[更新ガイド](https://echat.azora.top/en/guide/updating-fork)、`MESSAGE_RETENTION_DAYS` は[デプロイガイド](https://echat.azora.top/en/guide/actions-deploy)を参照してください。
+`Sync Upstream` は毎日 2 回、`EdgeChat-Update: stable` または `security` が付いた最新の上流リリースに独自コミットをリベースします。開始時と同じリモートの状態であることを確認してプッシュし、デプロイの開始を確認します。初回設定とトークン権限は[更新ガイド](docs/auto-update.md)、`MESSAGE_RETENTION_DAYS` は[デプロイガイド](https://echat.azora.top/en/guide/actions-deploy)を参照してください。
 
 Fork 後、自分のリポジトリの **Actions** を開き、GitHub の案内に従ってワークフローを有効にしてください。一覧の上部にある **`00 Deploy Worker`** を選択し、**`Run workflow`** をクリックします。`00` は名前順で上位に表示するための接頭辞として Fork に引き継がれ、元リポジトリのピン留め設定には依存しません。サイトのデプロイに他のワークフローの実行は不要です。
 
