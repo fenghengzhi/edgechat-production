@@ -12,6 +12,7 @@ on:
       - "test/**"
       - ".github/scripts/**"
       - ".github/workflows/deploy-worker.yml"
+      - ".github/workflows/update-production.yml"
       - "package.json"
       - "package-lock.json"
       - "biome.json"
@@ -19,20 +20,21 @@ on:
   workflow_dispatch:
     inputs:
       apply_encryption_keyring:
-        description: Apply EDGECHAT_ENCRYPTION_KEYRING, retaining every old key ID during rotation
+        description: Upstream installer only — apply EDGECHAT_ENCRYPTION_KEYRING
         required: false
         default: false
         type: boolean
       rotate_encryption_key:
-        description: Add a new automatic key and make it active while retaining every old key
+        description: Upstream installer only — rotate the automatic encryption key
         required: false
         default: false
         type: boolean
 concurrency:
   group: deploy-worker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   deploy:
+    if: github.repository == 'aozorae/Edgechat'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -213,3 +215,10 @@ jobs:
         if: always()
         shell: bash
         run: rm -f .tmp/worker-secrets.json
+  update-production:
+    if: github.repository == 'fenghengzhi/edgechat-production' && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    permissions:
+      contents: read
+    uses: ./.github/workflows/update-production.yml
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

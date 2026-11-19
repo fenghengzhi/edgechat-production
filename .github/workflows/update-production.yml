@@ -1,0 +1,67 @@
+name: Update existing EdgeChat instance
+on:
+  workflow_call:
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+permissions:
+  contents: read
+jobs:
+  update:
+    if: github.repository == 'fenghengzhi/edgechat-production' && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      CLOUDFLARE_ACCOUNT_ID: 8db6a57d585fbc12e9d28f3399e03e64
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Prepare production bindings
+        env:
+          MESSAGE_RETENTION_DAYS: ${{ vars.MESSAGE_RETENTION_DAYS || '30' }}
+        run: |
+          python3 .github/scripts/production-config.py > wrangler.production.json
+          echo "EDGECHAT_D1_DATABASE_ID=$(jq -er '.d1_databases[0].database_id' wrangler.production.json)" >> "$GITHUB_ENV"
+      - name: Check the existing Worker and database
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx --no-install wrangler deployments list --config wrangler.production.json --json | jq -e 'type == "array" and length > 0' > /dev/null
+          node .github/scripts/prepare-d1-migrations.mjs --verify-admin
+      - name: Apply and verify D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          node .github/scripts/prepare-d1-migrations.mjs
+          npx --no-install wrangler d1 execute DB --remote --file .tmp/edgechat-d1-migrations.sql --config wrangler.production.json
+          node .github/scripts/prepare-d1-migrations.mjs --verify
+      - name: Deploy to the existing Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx --no-install wrangler deploy --config wrangler.production.json --keep-vars --no-experimental-provision --no-experimental-auto-create
+      - name: Verify the production endpoints
+        env:
+          SITE_ORIGIN: https://chat.fenghengzhi.com
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 10 "$SITE_ORIGIN/api/health" | jq -es 'length == 1 and .[0].ok == true' > /dev/null &&
+               curl -fsS --max-time 10 "$SITE_ORIGIN/api/site" | jq -es 'length == 1 and (.[0].site.siteName | strings | length > 0)' > /dev/null; then
+              echo "Both production endpoints are healthy."
+              exit 0
+            fi
+            if [[ "$attempt" != 5 ]]; then sleep 5; fi
+          done
+          echo "::error::Production health or site metadata did not pass verification."
+          exit 1
