@@ -1,5 +1,6 @@
 # 数字前缀随 Fork 继承，让部署入口在默认名称排序中靠前，无需逐仓设置置顶。
 name: 00 Deploy Worker
+run-name: Deploy EdgeChat from ${{ github.ref_name }} (${{ github.event_name }})
 on:
   push:
     branches:
