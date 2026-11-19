@@ -5,6 +5,7 @@ import api from '../api.js';
 import store from '../store.js';
 import TelegramNotificationSettings from '../components/settings/TelegramNotificationSettings.vue';
 import VisualEffectsSettings from '../components/settings/VisualEffectsSettings.vue';
+import WebPushSettings from '../components/settings/WebPushSettings.vue';
 import UiAvatar from '../components/ui/Avatar.vue';
 import LanguageSwitch from '../components/ui/LanguageSwitch.vue';
 import { isCapacitorAndroid, pickNativeFile } from '../capacitor-platform.ts';
@@ -407,6 +408,7 @@ async function changePassword() {
           </button>
         </section>
         <VisualEffectsSettings class="settings-section" />
+        <WebPushSettings class="settings-section" />
         <TelegramNotificationSettings class="settings-section" />
       </div>
 

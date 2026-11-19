@@ -34,6 +34,37 @@ function runNotificationClick(clientList) {
   return { completed, opened, closed };
 }
 
+async function pushNotification(payload, language = 'en') {
+  const listeners = new Map();
+  const shown = [];
+  const self = { navigator: { language }, addEventListener: (type, handler) => listeners.set(type, handler),
+    registration: { async showNotification(title, options) { shown.push({ title, ...options }); } } };
+  runInNewContext(swSource, { self, URL });
+  let completed;
+  listeners.get('push')({ data: { json: () => payload }, waitUntil(promise) { completed = promise; } });
+  await completed;
+  assert.equal(shown.length, 1);
+  return shown[0];
+}
+
+test('background pushes show only generic text and route to the recipient’s DM', async () => {
+  const data = { type: 'message', recipientId: 7, roomId: 42, title: 'private sender', body: 'private content', url: 'https://example.invalid' };
+  const notification = await pushNotification(data);
+  assert.equal(notification.title, 'EdgeChat');
+  assert.equal(notification.body, 'New direct message');
+  assert.equal(notification.data.roomKind, 'dm');
+  assert.deepEqual(parseNotificationRoomTarget(notification.data), { kind: 'dm', id: 42, recipientId: 7 });
+  assert.equal(notification.data.url, undefined);
+  assert.deepEqual(Object.keys((await pushNotification({ type: 'message', roomId: -1 })).data), []);
+});
+
+test('background call pushes distinguish video, voice, and expired invitations', async () => {
+  const payload = { type: 'call', recipientId: 7, roomId: 42, expiresAt: Date.now() + 30000 };
+  assert.equal((await pushNotification(payload, 'zh-CN')).body, '语音来电');
+  assert.equal((await pushNotification({ ...payload, media: 'video' }, 'zh-TW')).body, '視訊來電');
+  assert.equal((await pushNotification({ ...payload, expiresAt: Date.now() - 5000 })).body, 'Missed call');
+});
+
 test('通知点击复用窗口时发送目标并聚焦', async () => {
   const messages = [];
   let focused = false;

@@ -35,9 +35,9 @@ You do not need to maintain a permanently running server. The application and da
 
 [Interface Preview](#interface-preview) · [Live Demo](#live-demo) · [Telegram Bridging](#telegram-two-way-bridging) · [Features](#features) · [Privacy and Encryption](#privacy-and-encryption) · [Deployment](#deployment) · [Local Development](#local-development)
 
-## Direct-message voice calls
+## Direct-message calls and push notifications
 
-From `2.11.0`, web DMs support one-to-one voice calls with answer, decline, mute, hangup and duration. P2P is the default; a compact selector supports manual TURN switching and failed direct connections fall back to TURN. No group/video calls or offline incoming calls; the demo does not place real calls.
+Open a direct message and select the phone or camera to start a one-to-one voice or video call. During a video call, either participant can mute their microphone or turn their camera off. Under account settings, enable push notifications on each device that should receive private-message and incoming-call alerts when the page is closed. On iPhone or iPad, add EdgeChat to the Home Screen and enable notifications from the installed app.
 
 Configure Worker / Repository Secrets `EDGECHAT_TURN_KEY_ID` and `EDGECHAT_TURN_API_TOKEN` to enable TURN. Without them only P2P is available. Cloudflare SFU and TURN share the first 1,000 GB free each month; excess egress costs $0.05/GB. See [configuration and protocol](docs/api/voice-calls.md).
 

@@ -13,6 +13,7 @@ import { forwardEdgeChatMessageToTelegram } from '../integrations/telegram/bridg
 import { isGroupChannelKind } from '../../../shared/group-channel.ts';
 import { authorizeRoom } from '../room-access.js';
 import { validateSession } from '../session.js';
+import { notifyDmDevices } from '../web-push.js';
 import { projectUnreadMessage } from '../unread-projection.js';
 import { isVerifiedInternalRequest, parseVerifiedPrincipal } from '../verified-identity.js';
 import { durableObjectHealth } from '../maintenance/do-health.ts';
@@ -158,7 +159,10 @@ export class ChannelRoom {
           replyToSenderId
         }),
         forwardEdgeChatMessageToTelegram(this.env, { room, message }),
-        wakeForMessage(this.env, room, message)
+        wakeForMessage(this.env, room, message),
+        room.kind === 'dm' && message.sender.kind === 'local' && notifyDmDevices(this.env, message.sender.id, {
+          type: 'message', roomId: Number(room.id), messageId: Number(message.id),
+        })
       ])
     );
   }

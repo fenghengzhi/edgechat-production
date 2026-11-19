@@ -37,6 +37,8 @@ import { registerContactRoutes } from './api/contacts.ts';
 import { registerLoginNetworkRoutes } from './api/login-network.ts';
 import { registerDmRoutes } from './api/dm.js';
 import { registerCallRoutes } from './api/calls.ts';
+import { registerWebPushRoutes } from './api/web-push.js';
+import { removeSessionPushSubscriptions } from './web-push.js';
 import { VoiceCall } from './do/VoiceCall.ts';
 import { TelegramNotifications } from './do/TelegramNotifications.ts';
 import { registerMessageRoutes } from './api/messages.js';
@@ -196,6 +198,7 @@ app.get('/api/auth/session', async (c) => {
 
 app.post('/api/auth/logout', async (c) => {
   const session = c.get('session');
+  await removeSessionPushSubscriptions(c.env, session);
   await deleteSession(c.env, session.token);
   c.header('Set-Cookie', sessionCookie(c.req.raw, ''));
   return c.json({ ok: true });
@@ -280,6 +283,7 @@ registerMessageRoutes(app);
 registerContactRoutes(app);
 registerDmRoutes(app);
 registerCallRoutes(app);
+registerWebPushRoutes(app);
 registerUserBlockRoutes(app);
 registerUserProfileRoutes(app);
 registerUploadRoutes(app);

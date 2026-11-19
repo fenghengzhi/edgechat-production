@@ -1,3 +1,4 @@
+import { removeSessionPushSubscriptions } from '../web-push.js';
 import { verifyPassword } from '../auth.js';
 import { verifyLoginSecurity } from '../login-security.ts';
 import { getLoginVerification } from '../data/login-verification.ts';
@@ -137,7 +138,9 @@ export function registerV1Routes(app) {
   });
 
   app.post('/api/v1/auth/logout', authMiddleware, async (c) => {
-    await revokeMobileDeviceSession(c.env, c.get('session'));
+    const session = c.get('session');
+    await removeSessionPushSubscriptions(c.env, session);
+    await revokeMobileDeviceSession(c.env, session);
     return c.json({ ok: true });
   });
 

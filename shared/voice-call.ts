@@ -1,6 +1,7 @@
 export type CallMode = 'auto' | 'relay';
+export type CallMedia = 'audio' | 'video';
 export interface CallAction {
-  type: string; callId: string; clientId: string; mode?: CallMode;
+  type: string; callId: string; clientId: string; mode?: CallMode; media?: CallMedia;
   revision?: number; sdp?: string;
   candidate?: { candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null; usernameFragment?: string | null };
 }

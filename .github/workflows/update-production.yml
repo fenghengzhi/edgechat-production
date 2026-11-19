@@ -50,7 +50,9 @@ jobs:
       - name: Deploy to the existing Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx --no-install wrangler deploy --config wrangler.production.json --keep-vars --no-experimental-provision --no-experimental-auto-create
+        run: |
+          node .github/scripts/deploy-production.mjs
+          npx --no-install wrangler secret list --config wrangler.production.json --format json | jq -e 'any(.[]; .name == "WEB_PUSH_VAPID_JWK")' > /dev/null
       - name: Verify the production endpoints
         env:
           SITE_ORIGIN: https://chat.fenghengzhi.com

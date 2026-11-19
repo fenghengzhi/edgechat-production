@@ -253,6 +253,14 @@ export const D1_MIGRATIONS = [
   },
 ];
 
+// Keep deployment-specific migrations ordered alongside future upstream additions.
+D1_MIGRATIONS.push({
+  id: "2026-11-19-web-push",
+  file: "worker/migrations/2026-11-19-web-push.sql",
+  artifacts: ["table:web_push_subscriptions", "index:idx_web_push_user"],
+});
+D1_MIGRATIONS.sort((a, b) => a.file < b.file ? -1 : a.file > b.file ? 1 : 0);
+
 // b3f6855 曾发布、0c13e8f 已撤回的迁移：仅识别历史 ledger，不要求新安装创建废弃表，也不删除旧数据。
 // 保留当时 LF/CRLF 的精确校验值，不能把所有早于当前版本的未知迁移一律当成正常。
 export const D1_RETIRED_MIGRATIONS = [{

@@ -74,8 +74,21 @@ export default {
   unprotectUser(id, expectedAuthzVersion) { return request(`/admin/rbac/users/${id}/unprotect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { expectedAuthzVersion } }); },
   adminAudit(offset = 0) { return request(`/admin/audit?offset=${offset}`); },
   adminStorage() { return request('/admin/storage'); },
+  pushConfig() { return request('/push/config', { signal: AbortSignal.timeout(10000) }); },
+  pushStatus(endpoint) {
+    return request('/push/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { endpoint }, signal: AbortSignal.timeout(10000) });
+  },
+  savePushSubscription(subscription) {
+    return request('/push/subscription', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: subscription, signal: AbortSignal.timeout(10000) });
+  },
+  deletePushSubscription(endpoint) {
+    return request('/push/subscription', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: { endpoint }, signal: AbortSignal.timeout(5000) });
+  },
   callConfig(roomId) {
     return request(`/calls/${roomId}/config`, { signal: AbortSignal.timeout(10000) });
+  },
+  callPending(roomId) {
+    return request(`/calls/${roomId}/pending`, { signal: AbortSignal.timeout(10000) });
   },
   callAction(roomId, body) {
     return request(`/calls/${roomId}/action`, {

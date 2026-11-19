@@ -4,6 +4,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { reactive } from 'vue';
 import api from '../frontend/src/api.js';
+import { reconcileDevicePush, removeDevicePush } from '../frontend/src/web-push.js';
 import { normalizeSiteColorTheme } from '../shared/site-theme.ts';
 
 const read = (name) => readFileSync(new URL(`../frontend/src/${name}`, import.meta.url), 'utf8');
@@ -23,7 +24,7 @@ test('startup test source extraction supports LF and CRLF checkouts', () => {
 function startup({ token = '', native = false, origin = '', documentSession = false, site, session } = {}) {
   const calls = { site: 0, session: 0, metadata: [], themes: [] };
   const context = {
-    reactive, AbortController, normalizeSiteColorTheme,
+    reactive, AbortController, normalizeSiteColorTheme, reconcileDevicePush, removeDevicePush,
     isDemoMode: false, runtimeSessionToken: '', isCapacitorAndroid: native,
     hasDocumentSession: documentSession, isGatewayMode: documentSession,
     getStoredToken: () => token,

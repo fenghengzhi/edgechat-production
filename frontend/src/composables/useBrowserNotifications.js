@@ -2,6 +2,7 @@ import { computed, ref } from "vue";
 import { getNativeNotificationBridge } from "../capacitor-platform.ts";
 import { t } from "../i18n.js";
 import { messageMarkdownToPlainText } from "../message-markdown.ts";
+import { hasDevicePush } from "../web-push.js";
 
 const STORAGE_KEY_PREFIX = "edgechat:browser-notifications";
 
@@ -153,6 +154,7 @@ export function useBrowserNotifications(options = {}) {
 		}
 		mutedRoomKeys.value = nextMutedRooms;
 		persistPreferences();
+		options.onRoomMuteChanged?.(room);
 		return nextMutedRooms.has(key);
 	}
 
@@ -169,9 +171,13 @@ export function useBrowserNotifications(options = {}) {
 		if (!enabled.value || !shouldNotifyRoom(event)) {
 			return false;
 		}
+		if (!nativeNotifications && room.kind === 'dm' && hasDevicePush(options.userId, storage)) {
+			// The push service delivers this device's system notification.
+			return false;
+		}
 
 		const callInvite = event?.type === 'call_invite';
-		const title = callInvite ? `${room.name || 'EdgeChat'} · ${t('call.incoming')}` : event?.replyToMe
+		const title = callInvite ? `${room.name || 'EdgeChat'} · ${t(event.media === 'video' ? 'call.videoIncoming' : 'call.incoming')}` : event?.replyToMe
 			? t("notifications.repliedTitle", { room: room.name || "EdgeChat" })
 			: event?.mentionsMe
 				? t("notifications.mentionedTitle", { room: room.name || "EdgeChat" })
@@ -184,7 +190,7 @@ export function useBrowserNotifications(options = {}) {
 			]
 			.filter(Boolean)
 			.join(": ");
-		const body = callInvite ? t('call.voice') : needsAttention
+		const body = callInvite ? t(event.media === 'video' ? 'call.video' : 'call.voice') : needsAttention
 			? attentionBody ||
 				(event?.replyToMe
 					? t("notifications.repliedBody")

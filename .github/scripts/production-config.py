@@ -35,6 +35,7 @@ binding("r2_buckets", "FILES")["bucket_name"] = "web-chat-app-media"
 variables = config["vars"]
 variables["ADMIN_USERNAMES"] = "fenghengzhi"
 variables["SITE_ORIGINS"] = "https://edgechat.fenghengzhi.workers.dev,https://chat.fenghengzhi.com"
+variables["WEB_PUSH_SUBJECT"] = "https://chat.fenghengzhi.com"
 retention = os.getenv("MESSAGE_RETENTION_DAYS", "30")
 if not re.fullmatch(r"[1-9][0-9]*", retention):
     raise ValueError("MESSAGE_RETENTION_DAYS must be a positive integer")

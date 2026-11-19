@@ -1,13 +1,15 @@
 const ROOM_KINDS = new Set(['dm', 'public', 'private']);
 const KIND_PARAM = 'notificationRoomKind';
 const ID_PARAM = 'notificationRoomId';
+const RECIPIENT_PARAM = 'notificationRecipient';
 
 export function parseNotificationRoomTarget(data) {
   const kind = data?.roomKind;
   const id = Number(data?.roomId);
-  return ROOM_KINDS.has(kind) && Number.isSafeInteger(id) && id > 0
-    ? { kind, id }
-    : null;
+  if (!ROOM_KINDS.has(kind) || !Number.isSafeInteger(id) || id <= 0) return null;
+  if (data?.recipientId == null) return { kind, id };
+  const recipientId = Number(data.recipientId);
+  return Number.isSafeInteger(recipientId) && recipientId > 0 ? { kind, id, recipientId } : null;
 }
 
 export function takeNotificationRoomTarget(browserWindow) {
@@ -19,9 +21,11 @@ export function takeNotificationRoomTarget(browserWindow) {
   const target = parseNotificationRoomTarget({
     roomKind: url.searchParams.get(KIND_PARAM),
     roomId: url.searchParams.get(ID_PARAM),
+    recipientId: url.searchParams.get(RECIPIENT_PARAM)
   });
   url.searchParams.delete(KIND_PARAM);
   url.searchParams.delete(ID_PARAM);
+  url.searchParams.delete(RECIPIENT_PARAM);
   browserWindow.history.replaceState(
     browserWindow.history.state,
     '',

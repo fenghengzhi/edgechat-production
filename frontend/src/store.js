@@ -8,6 +8,7 @@ import {
 import { isDemoMode, runtimeSessionToken } from './runtime.js';
 import api from './api.js';
 import { applySiteMetadata } from './site-metadata.js';
+import { reconcileDevicePush, removeDevicePush } from './web-push.js';
 import { normalizeSiteColorTheme } from '../../shared/site-theme.ts';
 import { applySiteColorTheme } from './site-theme.ts';
 import { hasDocumentSession, isGatewayMode } from './gateway.ts';
@@ -103,6 +104,7 @@ async function initializeSession() {
     state.session = payload.session;
     state.token = payload.session.token;
     setStoredToken(state.token);
+    void reconcileDevicePush(api, payload.session.userId).catch(() => {});
     collectLoginNetwork(payload.session);
   } catch {
     clearAuthState();
@@ -117,6 +119,7 @@ async function login(credentials) {
   state.session = payload.session;
   state.ready = true;
   setStoredToken(payload.token);
+  void reconcileDevicePush(api, payload.session.userId).catch(() => {});
   collectLoginNetwork(payload.session);
 }
 
@@ -143,7 +146,9 @@ async function configureNativeServer(configuredOrigin) {
 async function logout() {
   try {
     if (state.token) {
-      await api.logout();
+      // The server revokes this session's endpoints; also release the browser's
+      // subscription and dismiss any old notifications on this device.
+      await Promise.all([api.logout(), removeDevicePush(null).catch(() => {})]);
     }
   } finally {
     clearAuthState();
@@ -179,6 +184,7 @@ function setSite(site) {
 if (typeof window !== 'undefined') {
   window.addEventListener('authorization-changed', () => { void refreshAuthorization().catch(() => {}); });
   addAuthInvalidListener(() => {
+    void removeDevicePush(null).catch(() => {});
     clearAuthState();
     if (isGatewayMode) window.location.replace('/');
   });

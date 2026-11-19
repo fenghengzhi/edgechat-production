@@ -78,6 +78,10 @@ test("浏览器通知需由用户授权开启，并按账号持久化", async ()
 	});
 	assert.equal(otherAccount.notificationsEnabled.value, false);
 
+	storage.setItem('edgechat:web-push-owner', '7');
+	assert.equal(restored.notifyRoom({ kind: 'dm', id: 5 }), false);
+	assert.equal(restored.notifyRoom({ kind: 'private', id: 5 }), true);
+
 	NotificationApi.permission = "denied";
 	restored.syncNotificationPermission();
 	assert.equal(restored.notificationsEnabled.value, false);

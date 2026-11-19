@@ -1,8 +1,8 @@
-import { CALL_RING_MS, CALL_STUN, type CallMode, type CallAction } from '../../../shared/voice-call.ts';
+import { CALL_RING_MS, CALL_STUN, type CallMode, type CallMedia, type CallAction } from '../../../shared/voice-call.ts';
 
 interface CallSession {
   callId: string; roomId: number; callerId: number; calleeId: number; name: string;
-  mode: CallMode; callerClient?: string; calleeClient?: string;
+  mode: CallMode; media: CallMedia; callerClient?: string; calleeClient?: string;
 }
 interface CallEvent extends CallSession {
   type: string; revision: number; expiresAt: number; reason?: string;
@@ -11,20 +11,25 @@ interface CallEvent extends CallSession {
 }
 export interface CallSnapshot {
   call: CallSession | null; phase: string; muted: boolean; route: string; needsPlay: boolean; duration: number;
+  localVideo: MediaStream | null; remoteVideo: MediaStream | null; cameraEnabled: boolean;
 }
 interface CallApi {
-  callConfig(roomId: number): Promise<{ turnAvailable: boolean }>;
+  callConfig(roomId: number): Promise<{ turnAvailable: boolean; videoAvailable?: boolean }>;
+  callPending(roomId: number): Promise<{ invite: CallEvent | null }>;
   callAction(roomId: number, action: CallAction): Promise<unknown>;
   callIce(roomId: number, callId: string, clientId: string): Promise<{ iceServers: RTCIceServer[] }>;
 }
 interface CallClientOptions {
   api: CallApi; userId: number; onChange(state: CallSnapshot): void; onError(error: Error): void;
-  getMedia?: () => Promise<MediaStream>; createPeer?: (config: RTCConfiguration) => RTCPeerConnection;
+  getMedia?: (media: CallMedia) => Promise<MediaStream>; createPeer?: (config: RTCConfiguration) => RTCPeerConnection;
   createAudio?: () => HTMLAudioElement; clientId?: string;
 }
 
 export function createVoiceCallClient({ api, userId, onChange, onError,
-  getMedia = () => navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false }),
+  getMedia = media => navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true },
+    video: media === 'video' ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
+  }),
   createPeer = config => new RTCPeerConnection(config),
   createAudio = () => new Audio(),
   clientId = crypto.randomUUID() }: CallClientOptions) {
@@ -32,7 +37,10 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
   let peer: RTCPeerConnection | null = null;
   let stream: MediaStream | null = null;
   let audio: HTMLAudioElement | null = null;
+  let remoteVideo: MediaStream | null = null;
+  let cameraEnabled = false;
   let generation = 0;
+  let recovery = 0;
   let revision = 0;
   let candidates: RTCIceCandidateInit[] = [];
   let fallbackTimer: ReturnType<typeof setTimeout>;
@@ -48,6 +56,7 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
   let route = '';
   let needsPlay = false;
   const change = () => onChange({ call, phase, muted, route, needsPlay,
+    localVideo: call?.media === 'video' ? stream : null, remoteVideo, cameraEnabled,
     duration: connectedAt ? Math.floor((Date.now() - connectedAt) / 1000) : 0 });
   const action = (type: string, extra: Partial<CallAction> = {}) => {
     if (!call) return Promise.reject(new Error('call.ended'));
@@ -65,6 +74,8 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     clearTimeout(fallbackTimer);
     if (peer) { peer.onicecandidate = null; peer.onconnectionstatechange = null; peer.ontrack = null; peer.close(); }
     peer = null;
+    remoteVideo = null;
+    needsPlay = false;
     candidates = [];
     if (audio) { audio.pause(); audio.srcObject = null; }
     audio = null;
@@ -77,6 +88,7 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     closePeer();
     stream?.getTracks().forEach(track => { track.stop(); });
     stream = null;
+    cameraEnabled = false;
     call = null;
     revision = 0;
     phase = 'idle';
@@ -87,7 +99,11 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     change();
   }
   async function hangup() {
-    const pending = call ? action(userId !== call.callerId && !call.calleeClient ? 'reject' : 'hangup') : Promise.resolve();
+    const answering = call && userId === call.calleeId;
+    const localDraft = call && !answering && phase === 'permission';
+    const decline = answering && (phase === 'incoming' || phase === 'permission');
+    // If accept is already queued, hangup follows it even before our negotiation frame arrives.
+    const pending = call && !localDraft ? action(decline ? 'reject' : 'hangup') : Promise.resolve();
     reset();
     await pending.catch(() => {});
   }
@@ -95,11 +111,12 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     onError(error);
     await hangup();
   }
-  async function acquireMedia(epoch) {
-    const media = await getMedia();
+  async function acquireMedia(epoch, kind: CallMedia) {
+    const media = await getMedia(kind);
     // 用户可在授权弹窗仍打开时取消，迟到的媒体流不能留在后台采集。
     if (epoch !== generation) { media.getTracks().forEach(track => { track.stop(); }); return false; }
     stream = media;
+    cameraEnabled = kind === 'video';
     return true;
   }
   function startTimers() {
@@ -108,20 +125,21 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     heartbeat = setInterval(() => { void action('heartbeat').catch(fail); }, 25_000);
     clock = setInterval(change, 1000);
   }
-  async function start(room, mode: CallMode) {
+  async function start(room, mode: CallMode, media: CallMedia = 'audio') {
     if (call || room.kind !== 'dm' || room.isBlockedByMe) return;
     const epoch = ++generation;
     call = { callId: crypto.randomUUID(), roomId: Number(room.id), callerId: userId,
-      calleeId: room.otherUser.id, name: room.otherUser.displayName || room.otherUser.username || room.name, mode };
+      calleeId: room.otherUser.id, name: room.otherUser.displayName || room.otherUser.username || room.name, mode, media };
     phase = 'permission'; change();
     try {
       const config = await api.callConfig(call.roomId);
       if (epoch !== generation) return;
       turnAvailable = config.turnAvailable;
+      if (media === 'video' && !config.videoAvailable) throw new Error('call.videoUnavailable');
       if (mode === 'relay' && !turnAvailable) throw new Error('call.turnUnavailable');
-      if (!await acquireMedia(epoch)) return;
+      if (!await acquireMedia(epoch, media)) return;
       phase = 'calling'; change();
-      await action('start', { mode });
+      await action('start', { mode, media });
       if (epoch === generation) startTimers();
     } catch (error) { if (epoch === generation) await fail(error); }
   }
@@ -134,9 +152,10 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
       if (epoch !== generation) return;
       turnAvailable = config.turnAvailable;
       if ((mode === 'relay' || call.mode === 'relay') && !turnAvailable) throw new Error('call.turnUnavailable');
-      if (!await acquireMedia(epoch)) return;
+      const media = call.media;
+      if (!await acquireMedia(epoch, media)) return;
       phase = 'connecting'; change();
-      await action('accept', { mode });
+      await action('accept', { mode, media });
       if (epoch === generation) startTimers();
     } catch (error) { if (epoch === generation) await fail(error); }
   }
@@ -179,10 +198,20 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     };
     current.ontrack = e => {
       if (peer !== current) return;
-      audio = createAudio();
+      if (e.track.kind === 'video') {
+        if (call?.media === 'video') {
+          remoteVideo = e.streams[0] || new MediaStream([e.track]);
+          change();
+        }
+        return;
+      }
+      if (e.track.kind !== 'audio') return;
+      audio ??= createAudio();
       audio.autoplay = true;
-      audio.srcObject = e.streams[0] || new MediaStream([e.track]);
-      void audio.play().catch(() => { needsPlay = true; change(); });
+      audio.srcObject = new MediaStream([e.track]);
+      void audio.play().catch(() => {
+        if (peer === current) { needsPlay = true; change(); }
+      });
     };
     current.onconnectionstatechange = () => {
       if (peer !== current) return;
@@ -211,7 +240,7 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
         return;
       }
       generation++;
-      call = { ...event, name: event.users?.find(user => user.id === event.callerId)?.name || '' };
+      call = { ...event, media: event.media ?? 'audio', name: event.users?.find(user => user.id === event.callerId)?.name || '' };
       phase = 'incoming'; change();
       ringTimer = setTimeout(reset, Math.max(0, event.expiresAt - Date.now()));
       return;
@@ -247,11 +276,29 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     }
   }
   function receive(event: CallEvent) {
+    recovery++;
     const epoch = generation;
     eventQueue = eventQueue.then(() => handleEvent(event)).catch(error => {
       if (epoch === generation) return fail(error);
     });
     return eventQueue;
+  }
+  async function recoverInvite(roomId: number) {
+    if (call) return;
+    const request = ++recovery;
+    const epoch = generation;
+    try {
+      const { invite } = await api.callPending(roomId);
+      if (invite && request === recovery && epoch === generation) await receive(invite);
+    } catch {
+      // The live inbox can still deliver an invitation when the recovery request is unavailable.
+    }
+  }
+  function toggleCamera() {
+    if (!stream || call?.media !== 'video') return;
+    cameraEnabled = !cameraEnabled;
+    for (const track of stream.getVideoTracks()) track.enabled = cameraEnabled;
+    change();
   }
   function toggleMute() {
     muted = !muted;
@@ -261,5 +308,5 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     try { await audio?.play(); needsPlay = false; change(); }
     catch { onError(new Error('call.playFailed')); }
   }
-  return { start, accept, hangup, switchMode, receive, toggleMute, play, reset };
+  return { start, accept, hangup, switchMode, receive, recoverInvite, toggleCamera, toggleMute, play, reset };
 }

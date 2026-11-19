@@ -28,6 +28,22 @@ test('call state defaults to P2P and only the callee can accept once', () => {
   assert.throws(() => nextCallState(accepted(), { type: 'accept', callId, clientId: calleeClient, mode: 'auto' }, 2, 1, 4, 200), /处理/);
 });
 
+test('video requires explicit acceptance while existing audio calls remain compatible', () => {
+  const video = nextCallState(null, { ...start, media: 'video' }, 1, 2, 4, 100);
+  const answer = { type: 'accept', callId, clientId: calleeClient, mode: 'auto' };
+  assert.equal(video.media, 'video');
+  assert.equal(ringing().media, 'audio');
+  const legacy = { ...ringing() };
+  delete legacy.media;
+  assert.equal(nextCallState(legacy, answer, 2, 1, 4, 200).phase, 'accepted');
+  assert.throws(() => nextCallState(video, answer, 2, 1, 4, 200), /类型/);
+  assert.throws(() => nextCallState(null, { ...start, media: 'other' }, 1, 2, 4, 100), /类型/);
+  const ongoing = nextCallState(video, { ...answer, media: 'video' }, 2, 1, 4, 200);
+  const offer = { type: 'offer', callId, clientId: callerClient, revision: 1, sdp: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n' };
+  assert.equal(nextCallState(ongoing, offer, 1, 2, 4, 250), ongoing);
+  assert.throws(() => nextCallState(accepted(), offer, 1, 2, 4, 250), /视频/);
+});
+
 test('busy calls, outsiders, and other tabs cannot take over a call', () => {
   assert.throws(() => nextCallState(ringing(), start, 1, 2, 4, 200), /正在通话/);
   assert.throws(() => nextCallState(accepted(), { type: 'hangup', callId, clientId: callerClient }, 3, 1, 4, 200), /双方/);
@@ -114,13 +130,13 @@ function clientHarness(options = {}) {
   const errors = [];
   const track = { stopped: false, enabled: true, stop() { this.stopped = true; } };
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
-  const api = { callConfig: async () => ({ turnAvailable: true }), callIce: async () => ({ iceServers: [{ urls: 'turn:relay' }] }), callAction: async (_id, body) => { actions.push(body); } };
+  const api = { callConfig: async () => ({ turnAvailable: true, videoAvailable: true }), callIce: async () => ({ iceServers: [{ urls: 'turn:relay' }] }), callAction: async (_id, body) => { actions.push(body); } };
   const createPeer = config => {
-    const peer = { config, connectionState: 'new', remoteDescription: null, addTrack() {}, close() { this.closed = true; }, createOffer: async () => ({ type: 'offer', sdp: 'v=0' }), createAnswer: async () => ({ type: 'answer', sdp: 'v=0' }), async setLocalDescription(value) { this.localDescription = value; }, async setRemoteDescription(value) { this.remoteDescription = value; }, addIceCandidate: async () => {} };
+    const peer = { config, connectionState: 'new', remoteDescription: null, tracks: [], addTrack(track) { this.tracks.push(track); }, close() { this.closed = true; }, createOffer: async () => ({ type: 'offer', sdp: 'v=0' }), createAnswer: async () => ({ type: 'answer', sdp: 'v=0' }), async setLocalDescription(value) { this.localDescription = value; }, async setRemoteDescription(value) { this.remoteDescription = value; }, addIceCandidate: async () => {} };
     peers.push(peer); return peer;
   };
   const client = createVoiceCallClient({ api, userId: 1, clientId: callerClient, getMedia: async () => stream, createPeer, onChange: value => states.push(value), onError: error => errors.push(error), ...options });
-  return { client, states, actions, peers, errors, track, stream };
+  return { api, client, states, actions, peers, errors, track, stream };
 }
 const room = { id: 4, kind: 'dm', name: 'Bob', otherUser: { id: 2 } };
 
@@ -167,6 +183,83 @@ test('incoming calls require acceptance, and another tab accepting dismisses the
   await h.client.receive({ type: 'call_negotiate', callId, callerId: 1, calleeId: 2, callerClient, calleeClient: callerClient, revision: 1, mode: 'auto' });
   assert.equal(h.states.at(-1).phase, 'idle');
   h.client.reset();
+});
+
+test('recovering a ringing video call asks for media only on acceptance and releases both tracks on hangup', async () => {
+  const video = { kind: 'video', enabled: true, stop() { this.stopped = true; } };
+  const audio = { kind: 'audio', enabled: true, stop() { this.stopped = true; } };
+  const stream = { getTracks: () => [audio, video], getVideoTracks: () => [video], getAudioTracks: () => [audio] };
+  const requests = [];
+  const h = clientHarness({ userId: 2, clientId: calleeClient, getMedia: async kind => { requests.push(kind); return stream; } });
+  const invite = { type: 'call_invite', callId, roomId: 4, callerId: 1, calleeId: 2, media: 'video', mode: 'auto', expiresAt: Date.now() + CALL_RING_MS };
+  h.api.callPending = async () => ({ invite });
+  try {
+    await h.client.recoverInvite(4);
+    await h.client.receive(invite);
+    assert.equal(h.states.at(-1).phase, 'incoming');
+    assert.equal(requests.length, 0);
+    await h.client.accept('auto');
+    assert.deepEqual(requests, ['video']);
+    assert.equal(h.actions.at(-1).media, 'video');
+    assert.equal(h.states.at(-1).localVideo, stream);
+    await h.client.receive({ ...invite, type: 'call_negotiate', callerClient, calleeClient, revision: 1 });
+    assert.deepEqual(h.peers[0].tracks, [audio, video]);
+    h.peers[0].ontrack({ track: video, streams: [stream] });
+    assert.equal(h.states.at(-1).remoteVideo, stream);
+    h.client.toggleCamera();
+    assert.equal(video.enabled, false);
+    assert.equal(audio.enabled, true);
+    h.client.toggleCamera();
+    assert.equal(video.enabled, true);
+    await h.client.receive({ ...invite, type: 'call_ended' });
+    assert.equal(audio.stopped && video.stopped, true);
+    assert.equal(h.states.at(-1).localVideo, null);
+    assert.equal(h.states.at(-1).remoteVideo, null);
+    assert.equal(h.peers[0].closed, true);
+  } finally { h.client.reset(); }
+});
+
+test('hanging up while an acceptance is in flight ends the accepted call and releases the device', async () => {
+  const h = clientHarness({ userId: 2, clientId: calleeClient });
+  const invite = { type: 'call_invite', callId, roomId: 4, callerId: 1, calleeId: 2, mode: 'auto', expiresAt: Date.now() + CALL_RING_MS };
+  let resolveAccept;
+  const accepting = new Promise(resolve => { resolveAccept = resolve; });
+  h.api.callAction = async (_room, action) => {
+    h.actions.push(action);
+    if (action.type === 'accept') await accepting;
+  };
+  try {
+    await h.client.receive(invite);
+    const connection = h.client.accept('auto');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const hangup = h.client.hangup();
+    assert.equal(h.track.stopped, true);
+    resolveAccept();
+    await Promise.all([connection, hangup]);
+    assert.deepEqual(h.actions.map(a => a.type), ['accept', 'hangup']);
+  } finally { h.client.reset(); }
+});
+
+test('a live hangup invalidates an outstanding restored invitation', async () => {
+  const h = clientHarness({ userId: 2 });
+  let resolvePending;
+  h.api.callPending = () => new Promise(resolve => { resolvePending = resolve; });
+  const invite = { type: 'call_invite', callId, roomId: 4, callerId: 1, calleeId: 2, media: 'video', expiresAt: Date.now() + CALL_RING_MS };
+  const pending = h.client.recoverInvite(4);
+  await h.client.receive({ ...invite, type: 'call_ended' });
+  resolvePending({ invite });
+  await pending;
+  assert.equal(h.states.length, 0);
+});
+
+test('video capture errors do not start signaling and audio calls never request a camera', async () => {
+  const media = [];
+  const h = clientHarness({ getMedia: async kind => { media.push(kind); throw new Error('media unavailable'); } });
+  await h.client.start(room, 'auto', 'video');
+  await h.client.start(room, 'auto');
+  assert.deepEqual(media, ['video', 'audio']);
+  assert.equal(h.actions.length, 0);
+  assert.equal(h.states.at(-1).phase, 'idle');
 });
 
 test('failed P2P starts one automatic relay renegotiation', async context => {
@@ -220,8 +313,14 @@ test('VoiceCall persists across eviction, arbitrates accept, forwards signals an
   const request = (userId, body) => object.fetch(new Request('https://internal/action?roomId=4', { method: 'POST', headers: createVerifiedPrincipalHeaders({ 'Content-Type': 'application/json' }, { userId }), body: JSON.stringify(body) }));
   assert.equal((await request(1, start)).status, 200);
   assert.equal(notifications.filter(event => event.payload.type === 'call_invite').length, 2);
+  const pending = async userId => (await object.fetch(new Request('https://internal/pending?roomId=4', { headers: createVerifiedPrincipalHeaders({}, { userId }) }))).json();
+  assert.equal((await pending(1)).invite, null);
+  const recovered = (await pending(2)).invite;
+  assert.equal(recovered.callId, callId);
+  assert.equal(recovered.media, 'audio');
   object = new VoiceCall({ storage }, env);
   assert.equal((await request(2, { type: 'accept', callId, clientId: calleeClient, mode: 'auto' })).status, 200);
+  assert.equal((await pending(2)).invite, null);
   assert.equal((await request(2, { type: 'accept', callId, clientId: callerClient, mode: 'auto' })).status, 409);
   assert.equal((await request(1, { type: 'offer', callId, clientId: callerClient, revision: 1, sdp: 'v=0\r\n' })).status, 200);
   assert.equal(notifications.at(-1).user, 'user:2');

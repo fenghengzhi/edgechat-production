@@ -3,6 +3,7 @@ import { notifyUserInbox, updateCallLease } from '../do-bridge.js';
 import { durableObjectHealth } from '../maintenance/do-health.ts';
 import { errorResponse } from '../utils.js';
 import { ApiError } from '../errors.js';
+import { notifyDmDevices } from '../web-push.js';
 import { authorizeVoiceCall } from '../calls/access.ts';
 import { generateCallIceServers, turnConfigured } from '../calls/turn.ts';
 import { callExpired, nextCallState, type CallState } from '../calls/state.ts';
@@ -29,10 +30,13 @@ export class VoiceCall {
     this.queue = next.catch(() => {});
     return next;
   }
-  async emit(call: CallState, type: string, extra = {}, target?: number) {
-    const payload = { type, callId: call.id, roomId: call.roomId, callerId: call.callerId,
+  event(call: CallState, type: string, extra = {}) {
+    return { type, callId: call.id, roomId: call.roomId, callerId: call.callerId,
       calleeId: call.calleeId, callerClient: call.callerClient, calleeClient: call.calleeClient,
-      mode: call.mode, revision: call.revision, expiresAt: call.createdAt + CALL_RING_MS, ...extra };
+      mode: call.mode, media: call.media ?? 'audio', revision: call.revision, expiresAt: call.createdAt + CALL_RING_MS, ...extra };
+  }
+  async emit(call: CallState, type: string, extra = {}, target?: number) {
+    const payload = this.event(call, type, extra);
     await Promise.all((target ? [target] : [call.callerId, call.calleeId]).map(id => notifyUserInbox(this.env, id, payload)));
   }
   async end(reason: string) {
@@ -57,6 +61,11 @@ export class VoiceCall {
         const roomId = Number(url.searchParams.get('roomId'));
         const access = await authorizeVoiceCall(this.env.DB, roomId, userId);
         if (this.call && callExpired(this.call, Date.now())) await this.end(this.call.phase === 'accepted' && Date.now() >= this.call.createdAt + CALL_MAX_MS ? 'limit' : 'timeout');
+        if (url.pathname === '/pending') {
+          const invite = this.call?.phase === 'ringing' && this.call.calleeId === userId
+            ? this.event(this.call, 'call_invite', { users: access.users }) : null;
+          return Response.json({ invite }, { headers: { 'Cache-Control': 'no-store' } });
+        }
         if (url.pathname === '/ice') {
           if (!this.call || this.call.id !== url.searchParams.get('callId') || this.call.phase !== 'accepted') return errorResponse('通话已结束', 410);
           const client = userId === this.call.callerId ? this.call.callerClient : this.call.calleeClient;
@@ -92,8 +101,12 @@ export class VoiceCall {
           await this.state.storage.put('call', next);
           await this.state.storage.setAlarm(next.phase === 'ringing' ? next.createdAt + CALL_RING_MS : Math.min(next.createdAt + CALL_MAX_MS, Date.now() + 35_000));
         }
-        if (action.type === 'start') await this.emit(next, 'call_invite', { users: access.users });
-        else if (action.type === 'accept' || action.type === 'restart') {
+        if (action.type === 'start') {
+          this.state.waitUntil?.(notifyDmDevices(this.env, next.callerId, {
+            type: 'call', roomId, callId: next.id, media: next.media ?? 'audio', expiresAt: next.createdAt + CALL_RING_MS,
+          }));
+          await this.emit(next, 'call_invite', { users: access.users });
+        } else if (action.type === 'accept' || action.type === 'restart') {
           if (next !== previous) await this.emit(next, 'call_negotiate');
         }
         else if (action.type !== 'heartbeat') {

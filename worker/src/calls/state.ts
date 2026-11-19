@@ -1,9 +1,9 @@
-import { CALL_HEARTBEAT_MS, CALL_MAX_MS, CALL_RING_MS, validCallId, validCallMode, type CallAction } from '../../../shared/voice-call.ts';
+import { CALL_HEARTBEAT_MS, CALL_MAX_MS, CALL_RING_MS, validCallId, validCallMode, type CallAction, type CallMedia } from '../../../shared/voice-call.ts';
 import { ApiError } from '../errors.js';
 
 export interface CallState {
   id: string; roomId: number; callerId: number; calleeId: number;
-  callerClient: string; calleeClient: string; mode: 'auto' | 'relay';
+  callerClient: string; calleeClient: string; mode: 'auto' | 'relay'; media?: CallMedia;
   phase: 'ringing' | 'accepted'; revision: number; createdAt: number;
   callerSeen: number; calleeSeen: number;
 }
@@ -17,9 +17,11 @@ export function nextCallState(call: CallState | null, action: CallAction, userId
   if (!validCallId(action.callId) || !validCallId(action.clientId)) throw new ApiError('无效的通话请求', 400);
   if (action.type === 'start') {
     if (!validCallMode(action.mode)) throw new ApiError('无效的连接方式', 400);
+    const media = action.media === undefined ? 'audio' : action.media;
+    if (media !== 'audio' && media !== 'video') throw new ApiError('无效的通话类型', 400);
     if (call) throw new ApiError('对方正在通话', 409);
     return { id: action.callId, roomId, callerId: userId, calleeId: peerId,
-      callerClient: action.clientId, calleeClient: '', mode: action.mode,
+      callerClient: action.clientId, calleeClient: '', mode: action.mode, media,
       phase: 'ringing', revision: 0, createdAt: now, callerSeen: now, calleeSeen: now } satisfies CallState;
   }
   if (!call || call.id !== action.callId) throw new ApiError('通话已结束', 410);
@@ -29,6 +31,7 @@ export function nextCallState(call: CallState | null, action: CallAction, userId
     if (caller || call.phase !== 'ringing') throw new ApiError('通话已被处理', 409);
     if (action.type === 'reject') return null;
     if (!validCallMode(action.mode)) throw new ApiError('无效的连接方式', 400);
+    if ((action.media === undefined ? 'audio' : action.media) !== (call.media ?? 'audio')) throw new ApiError('请刷新页面以接听此类型的通话', 409);
     return { ...call, phase: 'accepted', calleeClient: action.clientId, revision: 1,
       mode: action.mode === 'relay' ? 'relay' : call.mode, callerSeen: now, calleeSeen: now } satisfies CallState;
   }
@@ -48,6 +51,8 @@ export function nextCallState(call: CallState | null, action: CallAction, userId
     if (!action.candidate || typeof action.candidate.candidate !== 'string' || action.candidate.candidate.length > 2048) throw new ApiError('无效的通话信令', 400);
   } else if (typeof action.sdp !== 'string' || action.sdp.length > 24_000 || !action.sdp.startsWith('v=0')) {
     throw new ApiError('无效的通话信令', 400);
+  } else if ((call.media ?? 'audio') === 'audio' && /^m=video\s/m.test(action.sdp)) {
+    throw new ApiError('语音通话不支持视频轨道', 400);
   }
   return call;
 }
