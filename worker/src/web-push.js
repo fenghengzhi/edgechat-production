@@ -135,7 +135,9 @@ async function deliver(env, row, event, vapid, send) {
     data: { ...event, recipientId: row.user_id },
     options: { ttl, urgency: event.type === 'call' ? 'high' : 'normal' },
   }, subscription, vapid);
-  const response = await send(endpoint, { ...init, redirect: 'error', signal: AbortSignal.timeout(8000) });
+  // workerd supports manual redirects. A 3xx is a delivery failure and must
+  // never forward the signed payload to a location supplied by the provider.
+  const response = await send(endpoint, { ...init, redirect: 'manual', signal: AbortSignal.timeout(8000) });
   if (response.status === 404 || response.status === 410) {
     await env.DB.prepare('DELETE FROM web_push_subscriptions WHERE endpoint_id = ? AND subscription = ?')
       .bind(row.endpoint_id, row.subscription).run();

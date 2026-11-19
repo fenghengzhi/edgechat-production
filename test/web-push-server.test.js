@@ -122,7 +122,7 @@ test('only an active DM peer gets a decryptable standards-compliant payload; mut
   assert.equal(packets.length, 1);
   const { endpoint, init } = packets[0];
   assert.equal(endpoint, receiver.subscription.endpoint);
-  assert.equal(init.redirect, 'error');
+  assert.equal(init.redirect, 'manual');
   assert.equal(init.headers['content-encoding'], 'aes128gcm');
   const [matched, token] = /^vapid t=([^,]+), k=[\w-]+$/.exec(init.headers.authorization) ?? [];
   assert.ok(matched);
