@@ -17,6 +17,8 @@ export default {
   'call.acceptVideo': '接聽視訊通話',
   'call.cameraOff': '關閉攝影機',
   'call.cameraOn': '開啟攝影機',
+  'call.switchCamera': '切換攝影機',
+  'call.cameraSwitchFailed': '無法切換攝影機，你可以繼續通話，稍後再試。',
   'call.localVideo': '我的畫面',
   'call.remoteVideo': '對方畫面',
   'call.voice': '語音通話',

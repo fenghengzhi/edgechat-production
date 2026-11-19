@@ -1,4 +1,5 @@
 import { CALL_RING_MS, CALL_STUN, type CallMode, type CallMedia, type CallAction } from '../../../shared/voice-call.ts';
+import { cameraSize, openCamera, type CameraFacing, type GetCamera } from './camera.ts';
 
 interface CallSession {
   callId: string; roomId: number; callerId: number; calleeId: number; name: string;
@@ -12,6 +13,7 @@ interface CallEvent extends CallSession {
 export interface CallSnapshot {
   call: CallSession | null; phase: string; muted: boolean; route: string; needsPlay: boolean; duration: number;
   localVideo: MediaStream | null; remoteVideo: MediaStream | null; cameraEnabled: boolean;
+  cameraFacing: CameraFacing; canSwitchCamera: boolean; switchingCamera: boolean;
 }
 interface CallApi {
   callConfig(roomId: number): Promise<{ turnAvailable: boolean; videoAvailable?: boolean }>;
@@ -22,14 +24,17 @@ interface CallApi {
 interface CallClientOptions {
   api: CallApi; userId: number; onChange(state: CallSnapshot): void; onError(error: Error): void;
   getMedia?: (media: CallMedia) => Promise<MediaStream>; createPeer?: (config: RTCConfiguration) => RTCPeerConnection;
+  getCamera?: GetCamera; getCameras?: () => Promise<MediaDeviceInfo[]>;
   createAudio?: () => HTMLAudioElement; clientId?: string;
 }
 
 export function createVoiceCallClient({ api, userId, onChange, onError,
   getMedia = media => navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true },
-    video: media === 'video' ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
+    video: media === 'video' ? { facingMode: 'user', ...cameraSize } : false
   }),
+  getCamera = video => navigator.mediaDevices.getUserMedia({ audio: false, video }),
+  getCameras = () => navigator.mediaDevices.enumerateDevices(),
   createPeer = config => new RTCPeerConnection(config),
   createAudio = () => new Audio(),
   clientId = crypto.randomUUID() }: CallClientOptions) {
@@ -39,6 +44,12 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
   let audio: HTMLAudioElement | null = null;
   let remoteVideo: MediaStream | null = null;
   let cameraEnabled = false;
+  let cameraFacing: CameraFacing = 'user';
+  let cameraDevices: MediaDeviceInfo[] = [];
+  let cameraIds: Partial<Record<CameraFacing, string>> = {};
+  let switchingCamera = false;
+  let pendingCamera: MediaStreamTrack | null = null;
+  let videoSender: RTCRtpSender | null = null;
   let generation = 0;
   let recovery = 0;
   let revision = 0;
@@ -56,7 +67,8 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
   let route = '';
   let needsPlay = false;
   const change = () => onChange({ call, phase, muted, route, needsPlay,
-    localVideo: call?.media === 'video' ? stream : null, remoteVideo, cameraEnabled,
+    localVideo: call?.media === 'video' ? stream : null, remoteVideo, cameraEnabled, cameraFacing, switchingCamera,
+    canSwitchCamera: call?.media === 'video' && !!stream && cameraDevices.length !== 1,
     duration: connectedAt ? Math.floor((Date.now() - connectedAt) / 1000) : 0 });
   const action = (type: string, extra: Partial<CallAction> = {}) => {
     if (!call) return Promise.reject(new Error('call.ended'));
@@ -74,6 +86,7 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     clearTimeout(fallbackTimer);
     if (peer) { peer.onicecandidate = null; peer.onconnectionstatechange = null; peer.ontrack = null; peer.close(); }
     peer = null;
+    videoSender = null;
     remoteVideo = null;
     needsPlay = false;
     candidates = [];
@@ -88,7 +101,13 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     closePeer();
     stream?.getTracks().forEach(track => { track.stop(); });
     stream = null;
+    pendingCamera?.stop();
+    pendingCamera = null;
     cameraEnabled = false;
+    cameraFacing = 'user';
+    cameraDevices = [];
+    cameraIds = {};
+    switchingCamera = false;
     call = null;
     revision = 0;
     phase = 'idle';
@@ -117,7 +136,21 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     if (epoch !== generation) { media.getTracks().forEach(track => { track.stop(); }); return false; }
     stream = media;
     cameraEnabled = kind === 'video';
+    if (cameraEnabled) {
+      cameraFacing = media.getVideoTracks()[0]?.getSettings?.().facingMode === 'environment' ? 'environment' : 'user';
+      void detectCameras(epoch);
+    }
     return true;
+  }
+  async function detectCameras(epoch: number) {
+    try {
+      const devices = await getCameras();
+      if (epoch !== generation) return;
+      cameraDevices = devices.filter(device => device.kind === 'videoinput');
+      change();
+    } catch {
+      // Permission to capture can be available even when the device list is hidden.
+    }
   }
   function startTimers() {
     clearTimeout(ringTimer);
@@ -190,7 +223,10 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     }
     const current = createPeer({ iceServers, iceTransportPolicy: event.mode === 'relay' ? 'relay' : 'all' });
     peer = current;
-    stream.getTracks().forEach(track => { current.addTrack(track, stream); });
+    stream.getTracks().forEach(track => {
+      const sender = current.addTrack(track, stream);
+      if (track.kind === 'video') videoSender = sender;
+    });
     current.onicecandidate = e => {
       if (peer === current && e.candidate) void action('ice', { revision: event.revision, candidate: e.candidate.toJSON() }).catch(error => {
         if (peer === current) void fail(error);
@@ -294,10 +330,83 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
       // The live inbox can still deliver an invitation when the recovery request is unavailable.
     }
   }
+  async function changeCamera(target: CameraFacing) {
+    const local = stream;
+    if (!local) return;
+    const previous = local.getVideoTracks()[0];
+    if (!previous || switchingCamera) return;
+    const previousId = previous.getSettings?.().deviceId;
+    if (previousId) cameraIds[cameraFacing] = previousId;
+    const epoch = generation;
+    const capture: GetCamera = constraints => {
+      if (epoch !== generation) throw new DOMException('Call ended', 'AbortError');
+      return getCamera(constraints);
+    };
+    async function install(track: MediaStreamTrack, facing: CameraFacing) {
+      try {
+        if (epoch !== generation) return;
+        pendingCamera = track;
+        track.enabled = cameraEnabled;
+        // A P2P/relay restart can replace the sender while replaceTrack is pending.
+        while (videoSender) {
+          const sender = videoSender;
+          try { await sender.replaceTrack(track); }
+          catch (error) { if (sender === videoSender) throw error; }
+          if (epoch !== generation) return;
+          if (sender === videoSender) break;
+        }
+        local.addTrack(track);
+        local.removeTrack(previous);
+        previous.stop();
+        cameraFacing = facing;
+      } finally {
+        if (pendingCamera === track) pendingCamera = null;
+        if (epoch !== generation || !local.getVideoTracks().includes(track)) track.stop();
+      }
+    }
+    const switching = target !== cameraFacing;
+    const alternateId = cameraIds[target] ?? (previousId && cameraDevices.find(device => device.deviceId !== previousId)?.deviceId);
+    const acquire = () => openCamera(capture, target, alternateId, switching ? previousId : undefined);
+    switchingCamera = true;
+    change();
+    try {
+      let next: MediaStreamTrack;
+      try { next = await acquire(); }
+      catch (error) {
+        if (epoch !== generation || !switching || !['NotReadableError', 'AbortError'].includes(error.name)) throw error;
+        // Some phones can only open one camera at a time. Keep the microphone live.
+        previous.stop();
+        next = await acquire();
+      }
+      await install(next, target);
+    } catch {
+      if (epoch !== generation) return;
+      if (switching && previous.readyState === 'ended') {
+        try {
+          await install(await openCamera(capture, cameraFacing, previousId), cameraFacing);
+        } catch {
+          // Both lenses are unavailable. The camera toggle can retry while audio continues.
+        }
+      }
+      if (epoch !== generation) return;
+      if (local.getVideoTracks()[0]?.readyState === 'ended') cameraEnabled = false;
+      onError(new Error('call.cameraSwitchFailed'));
+    } finally {
+      if (epoch === generation) { switchingCamera = false; change(); }
+    }
+  }
+  function switchCamera() {
+    if (call?.media !== 'video' || !cameraEnabled || cameraDevices.length === 1) return;
+    return changeCamera(cameraFacing === 'user' ? 'environment' : 'user');
+  }
   function toggleCamera() {
     if (!stream || call?.media !== 'video') return;
     cameraEnabled = !cameraEnabled;
+    if (pendingCamera) pendingCamera.enabled = cameraEnabled;
     for (const track of stream.getVideoTracks()) track.enabled = cameraEnabled;
+    if (cameraEnabled && stream.getVideoTracks()[0]?.readyState === 'ended' && !switchingCamera) {
+      return changeCamera(cameraFacing);
+    }
     change();
   }
   function toggleMute() {
@@ -308,5 +417,5 @@ export function createVoiceCallClient({ api, userId, onChange, onError,
     try { await audio?.play(); needsPlay = false; change(); }
     catch { onError(new Error('call.playFailed')); }
   }
-  return { start, accept, hangup, switchMode, receive, recoverInvite, toggleCamera, toggleMute, play, reset };
+  return { start, accept, hangup, switchMode, receive, recoverInvite, switchCamera, toggleCamera, toggleMute, play, reset };
 }

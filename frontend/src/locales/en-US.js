@@ -15,6 +15,8 @@ export default {
   'call.acceptVideo': 'Answer video call',
   'call.cameraOff': 'Turn camera off',
   'call.cameraOn': 'Turn camera on',
+  'call.switchCamera': 'Switch camera',
+  'call.cameraSwitchFailed': 'Couldn’t switch cameras. You can keep talking and try again.',
   'call.localVideo': 'Your video',
   'call.remoteVideo': 'Remote video',
   'call.voice': 'Voice call',

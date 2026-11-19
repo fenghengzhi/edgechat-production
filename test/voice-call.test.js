@@ -132,7 +132,15 @@ function clientHarness(options = {}) {
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
   const api = { callConfig: async () => ({ turnAvailable: true, videoAvailable: true }), callIce: async () => ({ iceServers: [{ urls: 'turn:relay' }] }), callAction: async (_id, body) => { actions.push(body); } };
   const createPeer = config => {
-    const peer = { config, connectionState: 'new', remoteDescription: null, tracks: [], addTrack(track) { this.tracks.push(track); }, close() { this.closed = true; }, createOffer: async () => ({ type: 'offer', sdp: 'v=0' }), createAnswer: async () => ({ type: 'answer', sdp: 'v=0' }), async setLocalDescription(value) { this.localDescription = value; }, async setRemoteDescription(value) { this.remoteDescription = value; }, addIceCandidate: async () => {} };
+    const senders = [];
+    const peer = { config, connectionState: 'new', remoteDescription: null,
+      getSenders: () => senders,
+      addTrack(track) {
+        const sender = { track, async replaceTrack(next) { this.track = next; } };
+        senders.push(sender);
+        return sender;
+      },
+      close() { this.closed = true; }, createOffer: async () => ({ type: 'offer', sdp: 'v=0' }), createAnswer: async () => ({ type: 'answer', sdp: 'v=0' }), async setLocalDescription(value) { this.localDescription = value; }, async setRemoteDescription(value) { this.remoteDescription = value; }, addIceCandidate: async () => {} };
     peers.push(peer); return peer;
   };
   const client = createVoiceCallClient({ api, userId: 1, clientId: callerClient, getMedia: async () => stream, createPeer, onChange: value => states.push(value), onError: error => errors.push(error), ...options });
@@ -203,7 +211,7 @@ test('recovering a ringing video call asks for media only on acceptance and rele
     assert.equal(h.actions.at(-1).media, 'video');
     assert.equal(h.states.at(-1).localVideo, stream);
     await h.client.receive({ ...invite, type: 'call_negotiate', callerClient, calleeClient, revision: 1 });
-    assert.deepEqual(h.peers[0].tracks, [audio, video]);
+    assert.deepEqual(h.peers[0].getSenders().map(sender => sender.track), [audio, video]);
     h.peers[0].ontrack({ track: video, streams: [stream] });
     assert.equal(h.states.at(-1).remoteVideo, stream);
     h.client.toggleCamera();
@@ -217,6 +225,181 @@ test('recovering a ringing video call asks for media only on acceptance and rele
     assert.equal(h.states.at(-1).remoteVideo, null);
     assert.equal(h.peers[0].closed, true);
   } finally { h.client.reset(); }
+});
+
+function mediaTrack(kind, facingMode) {
+  return { kind, enabled: true, readyState: 'live',
+    getSettings: () => ({ deviceId: facingMode, facingMode }),
+    stop() { this.readyState = 'ended'; } };
+}
+function mediaStream(...initialTracks) {
+  const tracks = new Set(initialTracks);
+  return { getTracks: () => [...tracks], getVideoTracks: () => [...tracks].filter(t => t.kind === 'video'),
+    getAudioTracks: () => [...tracks].filter(t => t.kind === 'audio'),
+    addTrack: track => tracks.add(track), removeTrack: track => tracks.delete(track) };
+}
+async function connectedVideoCall(context, capture, cameras = ['user', 'environment']) {
+  const mic = mediaTrack('audio');
+  const front = mediaTrack('video', 'user');
+  const requests = [];
+  const h = clientHarness({
+    getMedia: async () => mediaStream(mic, front),
+    getCameras: async () => cameras.map(deviceId => ({ kind: 'videoinput', deviceId })),
+    getCamera: async constraints => {
+      requests.push(constraints);
+      return capture(constraints, front);
+    }
+  });
+  context.after(() => h.client.reset());
+  await h.client.start(room, 'auto', 'video');
+  const state = () => h.states.at(-1);
+  await h.client.receive({ ...state().call, type: 'call_negotiate', callerClient, calleeClient, revision: 1 });
+  const peer = h.peers[0];
+  peer.connectionState = 'connected';
+  peer.onconnectionstatechange();
+  const videoSender = peer.getSenders().find(sender => sender.track === front);
+  return { ...h, state, requests, front, mic, videoSender };
+}
+
+test('front and rear switching updates the peer and preview, preserving the muted microphone', async context => {
+  const h = await connectedVideoCall(context, ({ facingMode }) => mediaStream(mediaTrack('video', facingMode.exact)));
+  const originalActions = [...h.actions];
+  h.client.toggleMute();
+  h.client.toggleCamera();
+  await h.client.switchCamera();
+  assert.equal(h.requests.length, 0);
+  h.client.toggleCamera();
+  let previous = h.front;
+  for (const facing of ['environment', 'user']) {
+    await h.client.switchCamera();
+    const state = h.state();
+    assert.equal(state.cameraFacing, facing);
+    assert.equal(state.localVideo.getVideoTracks()[0], h.videoSender.track);
+    assert.equal(h.videoSender.track.getSettings().facingMode, facing);
+    assert.equal(previous.readyState, 'ended');
+    assert.equal(state.localVideo.getAudioTracks()[0], h.mic);
+    assert.equal(h.mic.enabled, false);
+    assert.equal(h.mic.readyState, 'live');
+    assert.equal(state.phase, 'connected');
+    previous = h.videoSender.track;
+  }
+  assert.deepEqual(h.actions, originalActions);
+  assert.equal(h.peers.length, 1);
+  assert.deepEqual(h.errors, []);
+});
+
+test('one reported camera offers no switch and never requests another camera', async context => {
+  const h = await connectedVideoCall(context, () => assert.fail('unexpected capture'), ['user']);
+  assert.equal(h.state().canSwitchCamera, false);
+  await h.client.switchCamera();
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.front.readyState, 'live');
+});
+
+test('a rejected sender replacement keeps the original camera and releases the unused track', async context => {
+  const rear = mediaTrack('video', 'environment');
+  const h = await connectedVideoCall(context, () => mediaStream(rear));
+  h.videoSender.replaceTrack = async () => { throw new DOMException('cannot replace', 'InvalidModificationError'); };
+  await h.client.switchCamera();
+  assert.equal(h.videoSender.track, h.front);
+  assert.equal(h.front.readyState, 'live');
+  assert.equal(rear.readyState, 'ended');
+  assert.equal(h.state().phase, 'connected');
+  assert.equal(h.state().switchingCamera, false);
+  assert.equal(h.errors.length, 1);
+});
+
+test('a phone requiring exclusive capture restores the old camera if the requested one fails', async context => {
+  const restored = mediaTrack('video', 'user');
+  const h = await connectedVideoCall(context, (constraints, front) => {
+    if (front.readyState === 'live') throw new DOMException('camera busy', 'NotReadableError');
+    if ((constraints.deviceId?.exact ?? constraints.facingMode?.exact) === 'user') return mediaStream(restored);
+    throw new DOMException('unavailable', 'NotFoundError');
+  });
+  await h.client.switchCamera();
+  assert.equal(h.front.readyState, 'ended');
+  assert.equal(h.videoSender.track, restored);
+  assert.equal(h.state().localVideo.getVideoTracks()[0], restored);
+  assert.equal(h.state().cameraFacing, 'user');
+  assert.equal(h.state().phase, 'connected');
+  assert.equal(h.mic.readyState, 'live');
+  assert.equal(h.errors.length, 1);
+});
+
+test('the camera can be reopened without redialing if both lenses temporarily fail', async context => {
+  let available = false;
+  const restored = mediaTrack('video', 'user');
+  const h = await connectedVideoCall(context, () => {
+    if (!available) throw new DOMException('camera in use', 'NotReadableError');
+    return mediaStream(restored);
+  });
+  await h.client.switchCamera();
+  assert.equal(h.state().cameraEnabled, false);
+  assert.equal(h.mic.readyState, 'live');
+  available = true;
+  await h.client.toggleCamera();
+  assert.equal(h.state().cameraEnabled, true);
+  assert.equal(h.videoSender.track, restored);
+  assert.equal(h.state().phase, 'connected');
+});
+
+test('a browser ignoring facingMode can switch by camera ID and releases the wrong capture', async context => {
+  const ignored = mediaTrack('video', 'user');
+  const rear = mediaTrack('video', 'environment');
+  const h = await connectedVideoCall(context, constraints => mediaStream(constraints.deviceId ? rear : ignored));
+  await h.client.switchCamera();
+  assert.deepEqual(h.requests.map(c => c.deviceId?.exact ?? c.facingMode.exact), ['environment', 'environment']);
+  assert.equal(ignored.readyState, 'ended');
+  assert.equal(h.videoSender.track, rear);
+  assert.equal(h.state().cameraFacing, 'environment');
+});
+
+test('multiple taps request one camera, and a new incoming call discards capture from a hung-up call', async context => {
+  const pending = Promise.withResolvers();
+  const rear = mediaTrack('video', 'environment');
+  const h = await connectedVideoCall(context, () => pending.promise);
+  const switching = h.client.switchCamera();
+  const repeated = h.client.switchCamera();
+  assert.equal(h.state().switchingCamera, true);
+  await h.client.hangup();
+  assert.equal(h.state().phase, 'idle');
+  const nextId = crypto.randomUUID();
+  await h.client.receive({ type: 'call_invite', callId: nextId, roomId: 4, callerId: 2, calleeId: 1,
+    mode: 'auto', media: 'video', expiresAt: Date.now() + CALL_RING_MS });
+  pending.resolve(mediaStream(rear));
+  await Promise.all([switching, repeated]);
+  assert.equal(h.requests.length, 1);
+  assert.equal(rear.readyState, 'ended');
+  assert.equal(h.state().phase, 'incoming');
+  assert.equal(h.state().call.callId, nextId);
+  assert.equal(h.state().localVideo, null);
+  assert.deepEqual(h.errors, []);
+});
+
+test('relay renegotiation and disabling video during replacement keep the new sender in sync', async context => {
+  const rear = mediaTrack('video', 'environment');
+  const h = await connectedVideoCall(context, () => mediaStream(rear));
+  const replacing = Promise.withResolvers();
+  const resume = Promise.withResolvers();
+  h.videoSender.replaceTrack = async () => {
+    replacing.resolve();
+    await resume.promise;
+    throw new DOMException('old peer closed', 'InvalidStateError');
+  };
+  const switching = h.client.switchCamera();
+  await replacing.promise;
+  h.client.toggleCamera();
+  assert.equal(rear.enabled, false);
+  await h.client.receive({ ...h.state().call, type: 'call_negotiate', callerClient, calleeClient, revision: 2, mode: 'relay' });
+  resume.resolve();
+  await switching;
+  const current = h.peers[1].getSenders().find(sender => sender.track.kind === 'video');
+  assert.equal(current.track, rear);
+  assert.equal(h.state().cameraEnabled, false);
+  assert.equal(current.track.enabled, false);
+  assert.equal(h.state().localVideo.getVideoTracks()[0], rear);
+  assert.equal(h.mic.enabled, true);
+  assert.deepEqual(h.errors, []);
 });
 
 test('hanging up while an acceptance is in flight ends the accepted call and releases the device', async () => {

@@ -9,7 +9,8 @@ import { isCapacitorAndroid } from '../capacitor-platform.ts';
 
 export function useVoiceCall({ userId, error, notifyIncoming, shouldRing }) {
   const preferredMode = ref<CallMode>('auto');
-  const state = shallowRef<CallSnapshot>({ call: null, phase: 'idle', muted: false, route: '', needsPlay: false, duration: 0, localVideo: null, remoteVideo: null, cameraEnabled: false });
+  const state = shallowRef<CallSnapshot>({ call: null, phase: 'idle', muted: false, route: '', needsPlay: false, duration: 0,
+    localVideo: null, remoteVideo: null, cameraEnabled: false, cameraFacing: 'user', switchingCamera: false, canSwitchCamera: false });
   const mode = computed(() => state.value.call && ['connecting', 'connected'].includes(state.value.phase)
     ? state.value.call.mode : preferredMode.value);
   const ringer = createCallRinger();
@@ -46,5 +47,5 @@ export function useVoiceCall({ userId, error, notifyIncoming, shouldRing }) {
     void client.switchMode(value);
   }
   return { state, mode, start, receive, recoverInvite, changeMode, accept: () => client.accept(preferredMode.value),
-    hangup: client.hangup, toggleMute: client.toggleMute, toggleCamera: client.toggleCamera, play: client.play };
+    hangup: client.hangup, toggleMute: client.toggleMute, toggleCamera: client.toggleCamera, switchCamera: client.switchCamera, play: client.play };
 }

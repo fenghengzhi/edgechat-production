@@ -908,7 +908,8 @@ watch(
       </aside>
     </div>
 
-    <VoiceCallBar :state="callState" @accept="voiceCall.accept" @hangup="voiceCall.hangup" @mute="voiceCall.toggleMute" @camera="voiceCall.toggleCamera" @play="voiceCall.play" />
+    <VoiceCallBar :state="callState" @accept="voiceCall.accept" @hangup="voiceCall.hangup" @mute="voiceCall.toggleMute"
+      @camera="voiceCall.toggleCamera" @switch-camera="voiceCall.switchCamera" @play="voiceCall.play" />
     <MobileNavigationDrawer
       v-if="visitedOverlays.has('mobileNavigation')"
       :show="showMobileNavigation"

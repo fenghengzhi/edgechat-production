@@ -302,6 +302,8 @@ export default {
   'call.acceptVideo': '接听视频通话',
   'call.cameraOff': '关闭摄像头',
   'call.cameraOn': '开启摄像头',
+  'call.switchCamera': '切换摄像头',
+  'call.cameraSwitchFailed': '摄像头切换失败，你可以继续通话，稍后重试。',
   'call.localVideo': '我的画面',
   'call.remoteVideo': '对方画面',
   'call.voice': '语音通话',
