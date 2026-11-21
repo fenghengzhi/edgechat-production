@@ -5,6 +5,7 @@ import initSqlJs from 'sql.js';
 import worker from '../worker/src/index.js';
 import { createSession } from '../worker/src/auth.js';
 import { getUserByUsername } from '../worker/src/data/users.js';
+import { ChannelRoom } from '../worker/src/do/ChannelRoom.js';
 import { cleanupR2Keys, runScheduledGc } from '../worker/src/gc.js';
 import { deleteRoomMessage } from '../worker/src/message-deletion.js';
 import { runSystemCheck } from '../worker/src/maintenance/system-check.ts';
@@ -99,6 +100,48 @@ test('S3-only deployment uploads encrypted bytes, enforces download authorizatio
   assert.equal(duplicate.status, 200);
   assert.equal((await duplicate.json()).file.key, mobile.key);
   assert.equal(h.calls.filter((call) => call.method === 'PUT').length, puts);
+});
+
+test('a DM recipient can download an APK sent with generic binary MIME', async (t) => {
+  const h = await harness(t);
+  const apkType = 'application/vnd.android.package-archive';
+  h.env.ALLOWED_FILE_TYPES = apkType;
+  h.database.run("INSERT INTO users (id, username, display_name, password_hash, password_salt) VALUES (2,'reader','Reader','hash','salt'), (3,'outsider','Outsider','hash','salt')");
+  h.database.run("INSERT INTO channels (id, kind, name, dm_key) VALUES (17,'dm','DM','1:2')");
+  h.database.run('INSERT INTO channel_members (channel_id, user_id) VALUES (17,1), (17,2)');
+  const pending = [];
+  const room = new ChannelRoom({ getWebSockets: () => [], waitUntil: p => pending.push(p) }, h.env);
+  h.env.CHANNEL_ROOM = { idFromName: name => name, get: () => room };
+  h.env.USER_INBOX = { idFromName: name => name, get: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+  const reader = await createSession(h.env, await getUserByUsername(h.env.DB, 'reader'));
+  const outsider = await createSession(h.env, await getUserByUsername(h.env.DB, 'outsider'));
+  const filename = '测试应用.apk';
+  const bytes = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0, 0xf0, 0xfe, 0xff]);
+  const body = new FormData();
+  body.set('file', new File([bytes], filename, { type: 'application/octet-stream' }));
+  const upload = await h.request('/api/upload', { method: 'POST', body });
+  assert.equal(upload.status, 200);
+  const { file } = await upload.json();
+  assert.equal(file.type, apkType);
+  assert.equal((await h.request(file.url, { token: reader.token })).status, 403);
+
+  const messages = '/api/v1/rooms/dm/17/messages';
+  const sent = await h.request(messages, { method: 'POST', body: { clientMessageId: crypto.randomUUID(), attachment: file } });
+  assert.equal(sent.status, 200);
+  await Promise.all(pending);
+  const history = await h.request(messages, { token: reader.token });
+  assert.equal(history.status, 200);
+  const { attachment } = (await history.json()).messages[0];
+  assert.equal(attachment.name, filename);
+  assert.equal(attachment.type, apkType);
+  assert.equal(attachment.size, bytes.length);
+  const download = await h.request(attachment.url, { token: reader.token });
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get('content-type'), apkType);
+  assert.match(download.headers.get('content-disposition'), /^attachment;/);
+  assert.ok(download.headers.get('content-disposition').includes(encodeURIComponent(filename)));
+  assert.deepEqual(new Uint8Array(await download.arrayBuffer()), bytes);
+  assert.equal((await h.request(attachment.url, { token: outsider.token })).status, 403);
 });
 
 test('S3 scan and maintenance use the selected backend and never expose object keys or credentials', async (t) => {

@@ -5,13 +5,15 @@ import {
   recordUploadedFile
 } from '../data/uploaded-files.js';
 import { decryptAttachment, encryptAttachment } from '../encryption.js';
-import { normalizeContentType, sanitizeFilename } from '../attachment-metadata.js';
+import { normalizeContentType, safeFilenameExtension, sanitizeFilename } from '../attachment-metadata.js';
 import { validateSession } from '../session.js';
 import { errorResponse, requestBodyTooLarge } from '../utils.js';
 import { getFileStorage, hasFileStorage } from '../storage/index.ts';
 
 const FILE_RESPONSE_CACHE_CONTROL = 'private, no-store';
 const UPLOAD_BODY_OVERHEAD_BYTES = 1024 * 1024;
+const APK_CONTENT_TYPE = 'application/vnd.android.package-archive';
+const APK_FALLBACK_TYPES = new Set(['', 'application/octet-stream', 'application/zip', 'application/x-zip-compressed']);
 const BLOCKED_MIME_TYPES = new Set([
   'text/html',
   'application/xhtml+xml',
@@ -57,7 +59,7 @@ function validateUpload(env, file) {
     throw new Error(`文件大小不能超过 ${Math.round(maxFileSize / 1024 / 1024)}MB`);
   }
 
-  const contentType = normalizeContentType(file.type);
+  let contentType = normalizeContentType(file.type);
   if (BLOCKED_MIME_TYPES.has(contentType)) {
     throw new Error('该文件类型不允许上传');
   }
@@ -67,9 +69,16 @@ function validateUpload(env, file) {
     .map((item) => item.trim())
     .filter(Boolean);
 
-  if (allowed.length && !allowed.some((prefix) => contentType.startsWith(prefix))) {
+  const permits = type => !allowed.length || allowed.some(prefix =>
+    prefix === APK_CONTENT_TYPE ? type === prefix : type.startsWith(prefix));
+  // File pickers can report an APK as ZIP or untyped binary. Keep other binaries and ZIP-only policies intact.
+  if (APK_FALLBACK_TYPES.has(contentType) && safeFilenameExtension(file.name) === '.apk' && permits(APK_CONTENT_TYPE)) {
+    contentType = APK_CONTENT_TYPE;
+  }
+  if (!permits(contentType)) {
     throw new Error('该文件类型不允许上传');
   }
+  return contentType || 'application/octet-stream';
 }
 
 export function registerUploadRoutes(app) {
@@ -164,7 +173,7 @@ export function registerUploadRoutes(app) {
 }
 
 export async function saveUploadedFile(env, session, file, { clientUploadId = null } = {}) {
-  validateUpload(env, file);
+  const contentType = validateUpload(env, file);
   const storage = getFileStorage(env);
   if (clientUploadId) {
     const existing = await getUploadedFileByClientId(env.DB, session.userId, clientUploadId);
@@ -174,7 +183,6 @@ export async function saveUploadedFile(env, session, file, { clientUploadId = nu
   const extension = file.name.includes('.') ? file.name.slice(file.name.lastIndexOf('.')) : '';
   const key = `${session.userId}/${Date.now()}-${crypto.randomUUID()}${extension}`;
   const filename = sanitizeFilename(file.name);
-  const contentType = normalizeContentType(file.type) || 'application/octet-stream';
   const encryptedFile = await encryptAttachment(env, await file.arrayBuffer(), key);
   await storage.put(key, encryptedFile, {
     httpMetadata: { contentType, cacheControl: FILE_RESPONSE_CACHE_CONTROL },

@@ -44,7 +44,7 @@ additional_types = (
     "application/zip", "application/x-zip-compressed", "application/x-7z-compressed",
     "application/gzip", "application/x-tar", "application/vnd.openxmlformats-officedocument.",
     "application/vnd.oasis.opendocument.", "application/msword", "application/vnd.ms-excel",
-    "application/vnd.ms-powerpoint",
+    "application/vnd.ms-powerpoint", "application/vnd.android.package-archive",
 )
 variables["ALLOWED_FILE_TYPES"] = ",".join(dict.fromkeys([
     *variables["ALLOWED_FILE_TYPES"].split(","), *additional_types,

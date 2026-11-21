@@ -218,6 +218,24 @@ test('客户端消息和附件重试复用同一服务端记录', async () => {
   );
 });
 
+test('APK fallback respects the deployment MIME allowlist', async (t) => {
+  const { database, env } = createEnvironment();
+  t.after(() => database.close());
+  const { user } = await seedUser(database);
+  const upload = (name, type) => saveUploadedFile(env, { userId: user.id }, new File(['data'], name, { type }));
+  env.ALLOWED_FILE_TYPES = 'application/zip';
+  assert.equal((await upload('app.apk', 'application/zip')).file.type, 'application/zip');
+  await assert.rejects(upload('app.apk', 'application/octet-stream'), /该文件类型不允许上传/);
+
+  env.ALLOWED_FILE_TYPES = 'application/vnd.android.package-archive';
+  for (const type of ['', 'application/octet-stream', 'application/x-zip-compressed']) {
+    assert.equal((await upload('App.APK', type)).file.type, env.ALLOWED_FILE_TYPES);
+  }
+  for (const [name, type] of [['app.apk.txt', 'application/octet-stream'], ['app.apk', 'text/html'], ['app.apk', 'application/vnd.android.package-archive-other']]) {
+    await assert.rejects(upload(name, type), /该文件类型不允许上传/);
+  }
+});
+
 test('API v1 从 capabilities、设备登录到复用 bootstrap 保持统一契约', async () => {
   const { database, env } = createEnvironment();
   const { password } = await seedUser(database);
